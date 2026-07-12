@@ -13,6 +13,10 @@ assumed or carried over; the user may grant several milestones at once.
 Likewise, an approved plan is not a go signal: halt after plan approval and
 wait for the user's explicit "go."
 
+**Never `git push`.** Agents commit locally; the user pushes himself as his
+final sign-off on each stopping point. (His `gh` credential on this machine
+is a work account — never use it for this personal repo.)
+
 ## Non-negotiables (details and rationale in docs/DESIGN.md)
 
 - Zero network code, ever. No analytics, no accounts.
