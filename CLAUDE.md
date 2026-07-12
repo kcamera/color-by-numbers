@@ -17,6 +17,16 @@ wait for the user's explicit "go."
 final sign-off on each stopping point. (His `gh` credential on this machine
 is a work account — never use it for this personal repo.)
 
+## Branch & tag workflow
+
+Each milestone's work happens on a branch named `claude-Mn` (e.g.
+`claude-M1`), with as many commits as the implementation naturally wants —
+`main` stays untouched mid-milestone. At the milestone gate, only after the
+user reviews and accepts: merge into `main` with `--no-ff` (every milestone
+gets a real merge commit), create an annotated tag `Mn` on that merge
+commit, and keep the branch alive as a visual ledger. The user then pushes
+`main`, the branch, and the tag himself.
+
 ## Non-negotiables (details and rationale in docs/DESIGN.md)
 
 - Zero network code, ever. No analytics, no accounts.

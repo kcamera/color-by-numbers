@@ -19,6 +19,12 @@ more than one milestone at a time; permission must be present, never assumed or
 carried over. Milestone boundaries are where the user validates and re-aligns
 the work.
 
+**Branch & tag workflow:** each milestone is built on a `claude-Mn` branch
+(multiple commits welcome; `main` untouched mid-milestone). After the user
+accepts the milestone at the gate: merge `--no-ff` into `main`, annotated
+tag `Mn` on the merge commit, branch kept alive as a visual ledger. The
+user pushes everything himself (see push policy in CLAUDE.md).
+
 Work proceeds **one milestone at a time**, with a check-in at each milestone
 boundary. Small commits. The user is a strong engineer with **zero Swift/iOS
 experience** — explain iOS/Swift idioms as they first appear, and treat toolchain
