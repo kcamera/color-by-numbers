@@ -1,0 +1,42 @@
+# Source of truth for the Xcode project. Regenerate after editing:
+#   cd App && xcodegen
+# The generated .xcodeproj is gitignored on purpose — this file is what we
+# review and version.
+name: ColorByNumbers
+options:
+  bundleIdPrefix: com.kcamera
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  ColorByNumbersPackage:
+    path: ..
+
+targets:
+  ColorByNumbers:
+    type: application
+    platform: iOS
+    sources:
+      - ColorByNumbers
+    dependencies:
+      - package: ColorByNumbersPackage
+        product: CBNKit
+    info:
+      path: ColorByNumbers/Info.plist
+      properties:
+        CFBundleDisplayName: Color by Numbers
+        UILaunchScreen: {}
+        # Landscape only + full screen: one layout, no Split View/Stage
+        # Manager, Pencil home is always the top edge. Locked design decision.
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "2" # iPad only
+        SUPPORTS_MACCATALYST: false
+        SWIFT_VERSION: "6.0"
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0

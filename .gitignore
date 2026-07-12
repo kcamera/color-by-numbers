@@ -1,0 +1,11 @@
+# SwiftPM
+.build/
+.swiftpm/
+
+# Xcode — the project is generated from App/project.yml via xcodegen
+App/*.xcodeproj
+DerivedData/
+xcuserdata/
+
+# macOS
+.DS_Store
