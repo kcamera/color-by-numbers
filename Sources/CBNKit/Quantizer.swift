@@ -64,6 +64,19 @@ public enum Quantizer {
         var seeds: [Seed] = []
         var assignment: [UInt32: Int] = [:] // color key → seed index
 
+        // Bounds the greedy pass to O(uniqueColors × seedCap) instead of
+        // unbounded growth in seed count. Flat art stays far under this
+        // (a handful of fills plus AA noise rarely mints more than a few
+        // dozen provisional seeds); continuous-tone input (photos, 3D
+        // renders with full lighting gradients) would otherwise keep
+        // minting a new seed for nearly every distinct color, driving this
+        // loop toward O(uniqueColors²) — minutes of CPU time producing a
+        // template that was never going to look good anyway, since that
+        // input is outside flat-art import's scope. Once the cap is hit,
+        // every remaining color folds into its nearest existing seed
+        // regardless of ΔE, rather than minting more.
+        let seedCap = max(maxColors * 6, 48)
+
         for (key, count) in byFrequency {
             let lab = LabColor(
                 red: UInt8((key >> 16) & 0xFF),
@@ -79,7 +92,9 @@ public enum Quantizer {
                     nearestIndex = index
                 }
             }
-            if nearestIndex >= 0, nearestDelta < mergeThreshold {
+            let withinThreshold = nearestIndex >= 0 && nearestDelta < mergeThreshold
+            let atCap = seeds.count >= seedCap && nearestIndex >= 0
+            if withinThreshold || atCap {
                 assignment[key] = nearestIndex
                 seeds[nearestIndex].weight += count
             } else {
@@ -136,5 +151,46 @@ public enum Quantizer {
             labels: labels,
             palette: palette
         )
+    }
+
+    /// Mean CIE76 ΔE between every pixel and the palette color it was
+    /// assigned — "how much did quantizing to this many colors hurt".
+    ///
+    /// This is the measurable half of "how many colors does this image
+    /// actually need": sweeping `maxColors` and watching where this curve
+    /// flattens finds the image's natural color count — past that elbow,
+    /// extra palette entries only encode noise (JPEG artifacts, AA halos),
+    /// not artwork.
+    public static func meanQuantizationError(
+        of quantized: QuantizedImage,
+        in image: RasterImage
+    ) -> Double {
+        let pixelCount = quantized.width * quantized.height
+        guard pixelCount > 0 else { return 0 }
+        let paletteLabs = quantized.palette.map { LabColor(red: $0.r, green: $0.g, blue: $0.b) }
+
+        // A color key always maps to the same label, so per-unique-color
+        // caching turns per-pixel Lab math into a dictionary hit.
+        var errorByKey: [UInt32: Double] = [:]
+        var total = 0.0
+        image.rgba.withUnsafeBufferPointer { buffer in
+            for i in 0..<pixelCount {
+                let base = i * 4
+                let key = UInt32(buffer[base]) << 16
+                    | UInt32(buffer[base + 1]) << 8
+                    | UInt32(buffer[base + 2])
+                if let cached = errorByKey[key] {
+                    total += cached
+                } else {
+                    let lab = LabColor(
+                        red: buffer[base], green: buffer[base + 1], blue: buffer[base + 2]
+                    )
+                    let error = lab.deltaE(to: paletteLabs[quantized.labels[i]])
+                    errorByKey[key] = error
+                    total += error
+                }
+            }
+        }
+        return total / Double(pixelCount)
     }
 }

@@ -10,6 +10,7 @@ extension CBNTemplate {
         case malformedPaletteHex(number: Int, hex: String)
         case unknownColorNumber(regionID: String, colorNumber: Int)
         case degeneratePath(regionID: String, pointCount: Int)
+        case degenerateHole(regionID: String, holeIndex: Int, pointCount: Int)
         case emptyPalette
         case noRegions
 
@@ -23,6 +24,8 @@ extension CBNTemplate {
                 "region \"\(regionID)\" references color \(colorNumber), which is not in the palette"
             case .degeneratePath(let regionID, let pointCount):
                 "region \"\(regionID)\" has only \(pointCount) point(s); a closed polygon needs at least 3"
+            case .degenerateHole(let regionID, let holeIndex, let pointCount):
+                "region \"\(regionID)\" hole \(holeIndex) has only \(pointCount) point(s); a closed polygon needs at least 3"
             case .emptyPalette:
                 "template has no palette entries"
             case .noRegions:
@@ -56,6 +59,11 @@ extension CBNTemplate {
             }
             if region.path.count < 3 {
                 issues.append(.degeneratePath(regionID: region.id, pointCount: region.path.count))
+            }
+            for (index, hole) in region.holes.enumerated() where hole.count < 3 {
+                issues.append(
+                    .degenerateHole(regionID: region.id, holeIndex: index, pointCount: hole.count)
+                )
             }
         }
 

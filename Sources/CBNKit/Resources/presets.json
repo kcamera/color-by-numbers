@@ -1,26 +1,26 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "presets": [
     {
       "id": "simple",
       "name": "Simple",
       "colorCount": 6,
-      "minRegionAreaFraction": 0.004,
-      "detail": 0.35
+      "minRegionMM": 17,
+      "detail": 1.0
     },
     {
       "id": "just-right",
       "name": "Just Right",
       "colorCount": 10,
-      "minRegionAreaFraction": 0.0015,
-      "detail": 0.6
+      "minRegionMM": 10,
+      "detail": 1.0
     },
     {
       "id": "detailed",
       "name": "Detailed",
       "colorCount": 16,
-      "minRegionAreaFraction": 0.0005,
-      "detail": 0.85
+      "minRegionMM": 6,
+      "detail": 1.0
     }
   ]
 }

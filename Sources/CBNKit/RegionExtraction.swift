@@ -176,4 +176,93 @@ public enum RegionExtractor {
         }
         return map
     }
+
+    /// Pixel bounding box per region id, computed in one pass. Used to keep
+    /// per-region hole extraction local instead of image-sized.
+    public static func boundingBoxes(
+        in map: RegionMap
+    ) -> [(minX: Int, minY: Int, maxX: Int, maxY: Int)] {
+        var boxes = [(minX: Int, minY: Int, maxX: Int, maxY: Int)](
+            repeating: (Int.max, Int.max, Int.min, Int.min),
+            count: map.regionCount
+        )
+        for y in 0..<map.height {
+            let rowBase = y * map.width
+            for x in 0..<map.width {
+                let region = map.regionIDs[rowBase + x]
+                if x < boxes[region].minX { boxes[region].minX = x }
+                if y < boxes[region].minY { boxes[region].minY = y }
+                if x > boxes[region].maxX { boxes[region].maxX = x }
+                if y > boxes[region].maxY { boxes[region].maxY = y }
+            }
+        }
+        return boxes
+    }
+
+    /// A representative "safe to label" point per region — the pixel
+    /// farthest (by 4-connected BFS distance) from any other region's
+    /// pixels or the image edge, indexed by region id.
+    ///
+    /// This is deliberately computed from the pixel mask, not from a
+    /// region's traced polygons: a ring-shaped region's *outer* path looks
+    /// like a full disk, and placing a label via that disk's pole of
+    /// inaccessibility puts every concentric ring's number at the same
+    /// shared center. The pixel mask has no such ambiguity — a hole is
+    /// just pixels belonging to a different region — so this handles
+    /// rings, nested shapes, and stroke-like outline meshes with no
+    /// special-casing (and no dependence on how boundaries get traced).
+    public static func labelPoints(for map: RegionMap) -> [CBNPoint] {
+        let width = map.width
+        let height = map.height
+        let ids = map.regionIDs
+        let pixelCount = width * height
+
+        // Multi-source BFS: every pixel touching a differently-labeled
+        // neighbor, or the image edge, starts at distance 0. One pass
+        // computes "distance from this pixel's own region boundary" for
+        // every pixel in the image at once.
+        var distance = [Int](repeating: -1, count: pixelCount)
+        var queue: [Int] = []
+        for y in 0..<height {
+            for x in 0..<width {
+                let i = y * width + x
+                let id = ids[i]
+                let onEdge = x == 0 || y == 0 || x == width - 1 || y == height - 1
+                let touchesOther = !onEdge && (
+                    ids[i - 1] != id || ids[i + 1] != id
+                        || ids[i - width] != id || ids[i + width] != id
+                )
+                if onEdge || touchesOther {
+                    distance[i] = 0
+                    queue.append(i)
+                }
+            }
+        }
+
+        var head = 0
+        while head < queue.count {
+            let i = queue[head]; head += 1
+            let x = i % width, y = i / width
+            let next = distance[i] + 1
+            if x > 0, distance[i - 1] == -1 { distance[i - 1] = next; queue.append(i - 1) }
+            if x < width - 1, distance[i + 1] == -1 { distance[i + 1] = next; queue.append(i + 1) }
+            if y > 0, distance[i - width] == -1 { distance[i - width] = next; queue.append(i - width) }
+            if y < height - 1, distance[i + width] == -1 { distance[i + width] = next; queue.append(i + width) }
+        }
+
+        var bestIndex = [Int](repeating: -1, count: map.regionCount)
+        var bestDistance = [Int](repeating: -1, count: map.regionCount)
+        for i in 0..<pixelCount {
+            let region = ids[i]
+            if distance[i] > bestDistance[region] {
+                bestDistance[region] = distance[i]
+                bestIndex[region] = i
+            }
+        }
+
+        return (0..<map.regionCount).map { region in
+            let i = bestIndex[region] // always set: every region has ≥1 pixel
+            return CBNPoint(x: Double(i % width), y: Double(i / width))
+        }
+    }
 }

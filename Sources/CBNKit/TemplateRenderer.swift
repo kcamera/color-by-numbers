@@ -53,12 +53,16 @@ public enum TemplateRenderer {
         // Regions are stored in painter's order — draw front to back as-is.
         for region in template.regions {
             guard region.path.count >= 3 else { continue }
+            // One CGPath per region: outer ring plus hole rings as
+            // subpaths, filled even-odd so holes stay unpainted.
             let path = CGMutablePath()
-            path.move(to: CGPoint(x: region.path[0].x, y: region.path[0].y))
-            for point in region.path.dropFirst() {
-                path.addLine(to: CGPoint(x: point.x, y: point.y))
+            for ring in [region.path] + region.holes where ring.count >= 3 {
+                path.move(to: CGPoint(x: ring[0].x, y: ring[0].y))
+                for point in ring.dropFirst() {
+                    path.addLine(to: CGPoint(x: point.x, y: point.y))
+                }
+                path.closeSubpath()
             }
-            path.closeSubpath()
 
             if mode != .outline {
                 let rgb = colorsByNumber[region.colorNumber].flatMap { $0 }
@@ -71,7 +75,7 @@ public enum TemplateRenderer {
                     )
                 )
                 context.addPath(path)
-                context.fillPath()
+                context.fillPath(using: .evenOdd)
             }
             if mode != .filled {
                 context.setStrokeColor(
@@ -86,10 +90,18 @@ public enum TemplateRenderer {
 
         if mode == .outline {
             for region in template.regions where region.path.count >= 3 {
+                // Net area — outer ring minus holes — so a thin outline
+                // mesh sizes its number by its actual ink, not by the
+                // whole drawing its outer ring happens to enclose.
+                let netArea = max(
+                    abs(PolygonGeometry.signedArea(of: region.path))
+                        - region.holes.reduce(0) { $0 + abs(PolygonGeometry.signedArea(of: $1)) },
+                    1
+                )
                 drawNumber(
                     region.colorNumber,
                     at: region.labelPoint,
-                    regionArea: abs(PolygonGeometry.signedArea(of: region.path)),
+                    regionArea: netArea,
                     in: context
                 )
             }

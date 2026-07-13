@@ -8,17 +8,65 @@ struct Cbnc: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "cbnc",
         abstract: "Color By Numbers pipeline CLI — import, render, validate, tune.",
+        discussion: """
+        Typical desk workflow:
+          make-testart   Generate the synthetic TestArt/ corpus (one-time, or
+                         after pulling changes to it).
+          tune           Sweep parameters over a corpus, produce an HTML
+                         contact sheet, eyeball it, bless winners into
+                         Sources/CBNKit/Resources/presets.json.
+          import         Convert one image into a .cbn template using a
+                         preset (or explicit parameter overrides).
+          render         Preview a template as filled / outline / composite
+                         PNG.
+          validate       Sanity-check a template's structure (used on
+                         hand-authored or hand-edited templates).
+
+        See 'cbnc help <subcommand>' or 'cbnc <subcommand> --help' for full
+        detail on any one of these — 'tune --help' in particular documents
+        the c/d/m filename convention used in its output.
+        """,
         subcommands: [
             ImportCommand.self,
             RenderCommand.self,
             ValidateCommand.self,
             TuneCommand.self,
+            SuggestCommand.self,
             MakeTestArtCommand.self,
         ]
     )
 }
 
 // MARK: - Shared helpers
+
+/// Resolves CLI inputs (files and/or directories) into image URLs. A
+/// directory contributes its *direct* contents only — non-recursion is
+/// what keeps `TestArt/local/` out of default sweeps (see README).
+enum ImageCollection {
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic"]
+
+    static func collect(from inputs: [String]) throws -> [URL] {
+        var urls: [URL] = []
+        for input in inputs {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: input, isDirectory: &isDirectory) else {
+                throw ValidationError("No such file or directory: \(input)")
+            }
+            if isDirectory.boolValue {
+                let entries = try FileManager.default.contentsOfDirectory(
+                    at: URL(fileURLWithPath: input),
+                    includingPropertiesForKeys: nil
+                )
+                urls.append(contentsOf: entries
+                    .filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+                    .sorted { $0.lastPathComponent < $1.lastPathComponent })
+            } else {
+                urls.append(URL(fileURLWithPath: input))
+            }
+        }
+        return urls
+    }
+}
 
 enum TemplateIO {
     static func read(_ path: String) throws -> CBNTemplate {
@@ -42,8 +90,11 @@ struct ParameterOptions: ParsableArguments {
     @Option(help: "Override the preset's palette size.")
     var colors: Int?
 
-    @Option(help: "Override the preset's minimum region area fraction.")
-    var minRegionFraction: Double?
+    @Option(
+        name: .customLong("min-region-mm"),
+        help: "Override the preset's smallest colorable region (dot diameter in mm at display size)."
+    )
+    var minRegionMM: Double?
 
     @Option(help: "Override the preset's detail (0...1).")
     var detail: Double?
@@ -55,7 +106,7 @@ struct ParameterOptions: ParsableArguments {
         }
         var parameters = preset.parameters
         if let colors { parameters.colorCount = colors }
-        if let minRegionFraction { parameters.minRegionAreaFraction = minRegionFraction }
+        if let minRegionMM { parameters.minRegionMM = minRegionMM }
         if let detail { parameters.detail = detail }
         return parameters
     }

@@ -1,6 +1,7 @@
 import ArgumentParser
 import CBNKit
 import CoreGraphics
+import Dispatch
 import Foundation
 
 /// The durable tuning workflow: sweep parameter combinations over test
@@ -9,20 +10,49 @@ import Foundation
 struct TuneCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "tune",
-        abstract: "Sweep pipeline parameters over images and build an HTML contact sheet."
+        abstract: "Sweep pipeline parameters over images and build an HTML contact sheet.",
+        discussion: """
+        Every combination of --colors × --detail × --min-region-mm is run \
+        once per image, producing two PNGs each:
+          <name>-c<colors>-d<detail>-m<mm>-composite.png  fills + outlines,
+                                                            for judging
+                                                            boundary quality
+          <name>-c<colors>-d<detail>-m<mm>-outline.png    blank numbered
+                                                            template — what
+                                                            the child sees
+
+        Filename letters: c = --colors, d = --detail, m = --min-region-mm.
+
+        Parameter effects:
+          --colors          Palette size cap — max distinct fill colors
+                             after quantization.
+          --detail           0...1. Higher keeps region boundaries more
+                             faithful to the source; lower simplifies
+                             them into calmer, chunkier shapes.
+          --min-region-mm    Smallest colorable region, as a dot diameter
+                             in millimeters at standard display size (the
+                             image's long edge shown at 240mm — an iPad
+                             landscape screen / printed page). Smaller
+                             regions merge into a neighbor. Rules of
+                             thumb: fingertip ≈ 10mm, comfortable tap
+                             target ≈ 7mm, a cartoon pupil ≈ 3mm.
+        """
     )
 
     @Argument(help: "Image files and/or directories of images.")
     var inputs: [String]
 
-    @Option(help: "Comma-separated palette sizes to sweep, e.g. 6,10,16.")
+    @Option(help: "Comma-separated palette sizes to sweep, e.g. 6,10,16. (filename: c)")
     var colors: String = "6,10,16"
 
-    @Option(help: "Comma-separated detail values to sweep, e.g. 0.35,0.6,0.85.")
-    var detail: String = "0.35,0.6,0.85"
+    @Option(help: "Comma-separated detail values to sweep, 0...1. DORMANT: 1.0 is the only sensible value (lower only facets boundaries — see ImportParameters.detail); the flag survives until the parameter's planned removal. (filename: d)")
+    var detail: String = "1.0"
 
-    @Option(help: "Comma-separated min region area fractions to sweep.")
-    var minRegionFraction: String = "0.0015"
+    @Option(
+        name: .customLong("min-region-mm"),
+        help: "Comma-separated min region sizes to sweep, as dot diameters in mm at display size. (filename: m)"
+    )
+    var minRegionMM: String = "10"
 
     @Option(name: .shortAndLong, help: "Output directory for the contact sheet.")
     var output: String = "tune-output"
@@ -30,72 +60,190 @@ struct TuneCommand: ParsableCommand {
     @Option(help: "Thumbnail width in pixels for sheet cells.")
     var cellWidth: Int = 420
 
+    /// One (image, parameter combo) unit of work — independent and
+    /// side-effect-isolated (each writes its own PNGs), so the whole batch
+    /// is safe to run across cores with no fine-grained coordination.
+    private struct Job {
+        var imageIndex: Int
+        var colorCount: Int
+        var detailValue: Double
+        var millimeters: Double
+    }
+
+    private struct JobResult {
+        var baseName: String
+        var caption: String
+        var detailLine: String
+        var fileNames: [String]
+        var regionCount: Int
+        /// Wall-clock elapsed, not clock()-based CPU time: clock() measures
+        /// the whole *process's* CPU time on Darwin, not the calling
+        /// thread's, so reading it from several jobs running at once would
+        /// double-count concurrently-running siblings into each job's
+        /// number. Wall time per job is valid under concurrency because
+        /// each thread just timestamps its own start/end.
+        var elapsedSeconds: Double
+    }
+
+    private enum JobOutcome {
+        case success(JobResult)
+        case failure(Error)
+    }
+
     func run() throws {
         let colorValues = try parseList(colors, Int.init, flag: "--colors")
         let detailValues = try parseList(detail, Double.init, flag: "--detail")
-        let fractionValues = try parseList(minRegionFraction, Double.init, flag: "--min-region-fraction")
+        let millimeterValues = try parseList(minRegionMM, Double.init, flag: "--min-region-mm")
 
-        let imageURLs = try collectImages()
+        let imageURLs = try ImageCollection.collect(from: inputs)
         guard !imageURLs.isEmpty else {
             throw ValidationError("No images found in: \(inputs.joined(separator: ", "))")
         }
 
-        let combos = colorValues.count * detailValues.count * fractionValues.count
-        if combos * imageURLs.count > 96 {
-            print("Note: \(combos) combinations × \(imageURLs.count) images = \(combos * imageURLs.count) cells — this may take a while.")
+        let comboCount = colorValues.count * detailValues.count * millimeterValues.count
+        if comboCount * imageURLs.count > 96 {
+            print("Note: \(comboCount) combinations × \(imageURLs.count) images = \(comboCount * imageURLs.count) cells — this may take a while.")
         }
 
         let outputURL = URL(fileURLWithPath: output)
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
 
-        var sections: [ContactSheetSection] = []
-        for imageURL in imageURLs {
-            let raster = try RasterImage.load(from: imageURL)
-            let stem = imageURL.deletingPathExtension().lastPathComponent
-            var cells: [ContactSheetCell] = []
+        // Decode every image once, up front, sequentially — decode is
+        // cheap next to the pipeline itself, so there's nothing to gain
+        // parallelizing it, and it keeps the parallel section below simple.
+        let rasters = try imageURLs.map { try RasterImage.load(from: $0) }
+        let stems = imageURLs.map { $0.deletingPathExtension().lastPathComponent }
 
-            for colorCount in colorValues {
-                for detailValue in detailValues {
-                    for fraction in fractionValues {
-                        let parameters = ImportParameters(
+        // A `let`, not a `var` built via append: captured by value in the
+        // concurrent closure below, so Swift 6 can see it never mutates
+        // during the parallel section.
+        let jobs: [Job] = imageURLs.indices.flatMap { imageIndex in
+            colorValues.flatMap { colorCount in
+                detailValues.flatMap { detailValue in
+                    millimeterValues.map { millimeters in
+                        Job(
+                            imageIndex: imageIndex,
                             colorCount: colorCount,
-                            minRegionAreaFraction: fraction,
-                            detail: detailValue
+                            detailValue: detailValue,
+                            millimeters: millimeters
                         )
-                        let template = ImportPipeline.importTemplate(
-                            from: raster, title: stem, parameters: parameters
-                        )
-                        let scale = Double(cellWidth) / template.size.width
-
-                        let baseName = "\(stem)-c\(colorCount)-d\(detailValue)-f\(fraction)"
-                        var fileNames: [String] = []
-                        for mode in [TemplateRenderer.Mode.composite, .outline] {
-                            guard let image = TemplateRenderer.render(template, mode: mode, scale: scale) else { continue }
-                            let fileName = "\(baseName)-\(mode.rawValue).png"
-                            try RasterImage.writePNG(
-                                image, to: outputURL.appendingPathComponent(fileName)
-                            )
-                            fileNames.append(fileName)
-                        }
-                        cells.append(
-                            ContactSheetCell(
-                                caption: "colors \(colorCount) · detail \(detailValue) · minFrac \(fraction)",
-                                detailLine: "\(template.regions.count) regions, \(template.palette.count) colors",
-                                imageFiles: fileNames
-                            )
-                        )
-                        print("  \(baseName): \(template.regions.count) regions")
                     }
                 }
             }
-            sections.append(ContactSheetSection(title: stem, cells: cells))
         }
+
+        // Every job writes to a distinct index — safe to fan out across
+        // cores via concurrentPerform without locks, but JobOutcome carries
+        // a non-Sendable `Error`, so the buffer pointer itself can't be
+        // proven Sendable mechanically. `nonisolated(unsafe)` is the
+        // sanctioned escape hatch for exactly this: we've manually verified
+        // the real invariant (indices never collide) that the compiler
+        // can't see through raw pointer arithmetic.
+        nonisolated(unsafe) let outcomes = UnsafeMutableBufferPointer<JobOutcome?>.allocate(capacity: jobs.count)
+        outcomes.initialize(repeating: nil)
+        defer { outcomes.deallocate() }
+
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        #if DEBUG
+        print("""
+        note: this is a DEBUG build — the pipeline runs ~30× slower than release.
+              For sweeps, use:  swift run -c release cbnc tune …
+        """)
+        #endif
+        print("Running \(jobs.count) job(s) across up to \(cores) cores…")
+
+        // A single clock() bracket around the whole parallel section is
+        // valid (no overlap to double-count here, unlike per-job deltas
+        // taken from inside concurrently-running jobs) and gives the true
+        // total CPU-seconds consumed by the batch across all threads.
+        let cpuStart = clock()
+        let wallClockStart = Date()
+        DispatchQueue.concurrentPerform(iterations: jobs.count) { index in
+            let job = jobs[index]
+            do {
+                let result = try runJob(
+                    job, raster: rasters[job.imageIndex], stem: stems[job.imageIndex], outputURL: outputURL
+                )
+                outcomes[index] = .success(result)
+            } catch {
+                outcomes[index] = .failure(error)
+            }
+        }
+        let wallSeconds = Date().timeIntervalSince(wallClockStart)
+        let totalCPUSeconds = Double(clock() - cpuStart) / Double(CLOCKS_PER_SEC)
+
+        var results = [JobResult?](repeating: nil, count: jobs.count)
+        for index in jobs.indices {
+            switch outcomes[index] {
+            case .success(let result): results[index] = result
+            case .failure(let error): throw error
+            case .none: break // unreachable: every index is written exactly once above
+            }
+        }
+
+        // Rebuild sections in the original image × combo order so output
+        // is identical to a sequential run — only the timing differs, not
+        // the report.
+        var sections: [ContactSheetSection] = []
+        var jobIndex = 0
+        for imageIndex in imageURLs.indices {
+            var cells: [ContactSheetCell] = []
+            for _ in 0..<comboCount {
+                guard let result = results[jobIndex] else { jobIndex += 1; continue }
+                cells.append(
+                    ContactSheetCell(
+                        caption: result.caption,
+                        detailLine: result.detailLine,
+                        imageFiles: result.fileNames
+                    )
+                )
+                print("  \(result.baseName): \(result.regionCount) regions (\(formatCPUTime(result.elapsedSeconds)) elapsed)")
+                jobIndex += 1
+            }
+            sections.append(ContactSheetSection(title: stems[imageIndex], cells: cells))
+        }
+
+        print("Total CPU time \(formatCPUTime(totalCPUSeconds)) across \(jobs.count) cells, wall time \(formatCPUTime(wallSeconds)) (\(cores) cores available)")
 
         let sheetURL = outputURL.appendingPathComponent("index.html")
         try ContactSheet.html(sections: sections)
             .write(to: sheetURL, atomically: true, encoding: .utf8)
         print("Contact sheet: \(sheetURL.path)")
         print("Open it, pick winners, bless them into Sources/CBNKit/Resources/presets.json.")
+    }
+
+    private func runJob(_ job: Job, raster: RasterImage, stem: String, outputURL: URL) throws -> JobResult {
+        let parameters = ImportParameters(
+            colorCount: job.colorCount,
+            minRegionMM: job.millimeters,
+            detail: job.detailValue
+        )
+        // Date(), not clock(): clock() is process-wide on Darwin, so
+        // reading it from several concurrently-running jobs would have
+        // each job's "own" number include CPU time spent by its siblings.
+        // A wall-clock timestamp is per-call and immune to that.
+        let start = Date()
+        let template = ImportPipeline.importTemplate(from: raster, title: stem, parameters: parameters)
+        let scale = Double(cellWidth) / template.size.width
+
+        let baseName = "\(stem)-c\(job.colorCount)-d\(job.detailValue)-m\(job.millimeters)"
+        var fileNames: [String] = []
+        for mode in [TemplateRenderer.Mode.composite, .outline] {
+            guard let image = TemplateRenderer.render(template, mode: mode, scale: scale) else { continue }
+            let fileName = "\(baseName)-\(mode.rawValue).png"
+            try RasterImage.writePNG(image, to: outputURL.appendingPathComponent(fileName))
+            fileNames.append(fileName)
+        }
+        let elapsedSeconds = Date().timeIntervalSince(start)
+
+        return JobResult(
+            baseName: baseName,
+            caption: "colors \(job.colorCount) · detail \(job.detailValue) · min \(job.millimeters)mm",
+            detailLine: "\(template.regions.count) regions, \(template.palette.count) colors",
+            fileNames: fileNames,
+            regionCount: template.regions.count,
+            elapsedSeconds: elapsedSeconds
+        )
     }
 
     private func parseList<T>(_ raw: String, _ transform: (String) -> T?, flag: String) throws -> [T] {
@@ -106,28 +254,15 @@ struct TuneCommand: ParsableCommand {
         return values
     }
 
-    private func collectImages() throws -> [URL] {
-        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic"]
-        var urls: [URL] = []
-        for input in inputs {
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: input, isDirectory: &isDirectory) else {
-                throw ValidationError("No such file or directory: \(input)")
-            }
-            if isDirectory.boolValue {
-                let entries = try FileManager.default.contentsOfDirectory(
-                    at: URL(fileURLWithPath: input),
-                    includingPropertiesForKeys: nil
-                )
-                urls.append(contentsOf: entries
-                    .filter { imageExtensions.contains($0.pathExtension.lowercased()) }
-                    .sorted { $0.lastPathComponent < $1.lastPathComponent })
-            } else {
-                urls.append(URL(fileURLWithPath: input))
-            }
-        }
-        return urls
-    }
+}
+
+/// Formats seconds as "mm:ss.ss" — fractional seconds because fast
+/// flat-art combos would otherwise all print as an undifferentiated
+/// "00:00".
+private func formatCPUTime(_ seconds: Double) -> String {
+    let minutes = Int(seconds) / 60
+    let remainder = seconds - Double(minutes * 60)
+    return String(format: "%02d:%05.2f", minutes, remainder)
 }
 
 // MARK: - Contact sheet HTML
