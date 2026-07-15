@@ -62,6 +62,49 @@ final class StudioFlowUITests: XCTestCase {
         attachScreenshot(of: app, named: "5-studio-after-coloring")
     }
 
+    /// Drives one picture to completion and checks the quiet "Done" badge:
+    /// absent while coloring, present once the last region fills, gone again
+    /// after an undo (it states the attempt's current state, not a trophy).
+    /// Banner is the target because it has the fewest regions (4: three
+    /// stripes plus a centered square); the 5×3 tap grid below covers all of
+    /// them, and the extra taps are silent no-ops by design.
+    @MainActor
+    func testDoneBadgeTracksCompletion() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        let card = app.staticTexts["Banner"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Banner card never appeared")
+        card.tap()
+        XCTAssertTrue(app.staticTexts["Studio"].waitForExistence(timeout: 10), "Canvas did not open")
+
+        let done = app.staticTexts["Done"]
+        XCTAssertFalse(done.exists, "Done badge visible before any coloring (needs a fresh install)")
+
+        let window = app.windows.firstMatch
+        for dy in [0.25, 0.5, 0.75] {
+            for dx in [0.2, 0.35, 0.5, 0.65, 0.8] {
+                window.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
+            }
+        }
+        XCTAssertTrue(done.waitForExistence(timeout: 5), "Done badge never appeared after filling every region")
+        attachScreenshot(of: app, named: "done-1-complete")
+        // Element-level capture: `app.screenshot()` on the iPadOS 26 sim
+        // draws the landscape app into a portrait frame and crops the
+        // trailing edge — exactly where this badge lives — so grab the
+        // badge's own pixels as direct evidence.
+        let badgeShot = XCTAttachment(screenshot: done.screenshot())
+        badgeShot.name = "done-1b-badge-closeup"
+        badgeShot.lifetime = .keepAlways
+        add(badgeShot)
+
+        app.buttons["Undo"].tap()
+        XCTAssertFalse(done.exists, "Done badge should retract when undo re-opens a region")
+        attachScreenshot(of: app, named: "done-2-after-undo")
+    }
+
     @MainActor
     private func attachScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())

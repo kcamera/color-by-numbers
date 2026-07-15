@@ -110,6 +110,7 @@ struct CanvasView: View {
         let template = model.template
         let filledIDs = Set(model.attempt.filledRegionIDs)
         let hasFills = !model.attempt.filledRegionIDs.isEmpty
+        let isComplete = model.attempt.isComplete(for: template)
 
         ZStack {
             DeskStyle.deskColor.ignoresSafeArea()
@@ -150,6 +151,9 @@ struct CanvasView: View {
                 HStack {
                     BackControl { dismiss() }
                     Spacer()
+                    if isComplete {
+                        DoneBadge()
+                    }
                 }
                 Spacer()
             }
@@ -261,6 +265,23 @@ private struct BackControl: View {
             .background(Capsule(style: .continuous).fill(Color.white.opacity(0.7)))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// A quiet statement of fact, not a celebration: when the last region is
+/// filled, the word "Done" appears top-trailing in the same capsule material
+/// as the back control, and simply stays. No animation, no sound, no color
+/// shift (DESIGN.md: no rewards — the finished art itself is the moment).
+/// It disappears again if undo re-opens a region, because it describes the
+/// attempt's current state, not an achievement that was "earned".
+private struct DoneBadge: View {
+    var body: some View {
+        Text("Done")
+            .font(.system(.body, design: .rounded, weight: .medium))
+            .foregroundStyle(DeskStyle.inkColor)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Capsule(style: .continuous).fill(Color.white.opacity(0.7)))
     }
 }
 
