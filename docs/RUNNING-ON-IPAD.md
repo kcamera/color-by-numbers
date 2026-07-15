@@ -59,37 +59,24 @@ You'll see a "team" appear (e.g. "Kevin Camera (Personal Team)").
 
 ### 2. Tell the project about your team — in project.yml, NOT in Xcode
 
-**Already done in this repo** — `App/project.yml` carries the team in a
-project-level `settings:` block (right below `options:`, so it applies
-to every target):
+**Already done in this repo**: `App/project.yml` carries team
+`7L38U9696P` in its project-level `settings:` block, so there is
+nothing to do unless the team changes (paid account, new Apple ID).
+When it does, here's the full recipe, in order:
 
-```yaml
-settings:
-  base:
-    DEVELOPMENT_TEAM: 7L38U9696P
-    CODE_SIGN_STYLE: Automatic
-```
-
-If the team ever changes (paid account, new Apple ID), edit that value
-and regenerate. It lives in project.yml rather than Xcode because the
-`.xcodeproj` is **gitignored and regenerated** by `xcodegen` — any
-signing setting you click into Xcode's *Signing & Capabilities* tab is
-erased on the next regeneration.
-
-Finding the 10-character Team ID is unhelpfully hidden for a free
-Personal Team — Xcode 26's Apple Accounts settings pane doesn't display
-it, and there's no developer.apple.com account page to read it from.
-Two ways that actually work:
+**Step 1 — find your 10-character Team ID.** It's unhelpfully hidden
+for a free Personal Team — Xcode 26's Apple Accounts settings pane
+doesn't display it, and there's no developer.apple.com account page to
+read it from. Two ways that actually work:
 
 - **Via the project (easiest):** open the project, select the
   ColorByNumbers target → *Signing & Capabilities* → pick your Personal
   Team in the Team dropdown. That click writes the ID into the generated
-  project; read it back with:
+  project (only temporarily — step 2 is what makes it stick); read it
+  back with:
   ```sh
   grep -m1 DEVELOPMENT_TEAM App/ColorByNumbers.xcodeproj/project.pbxproj
   ```
-  Copy the 10-character value into `project.yml` (the click itself will
-  be erased on the next `xcodegen` — the yml is what makes it stick).
 - **Via your signing certificate:** in Settings… → Apple Accounts →
   *Manage Certificates…*, click "+" → "Apple Development" if the list is
   empty. Then:
@@ -99,14 +86,28 @@ Two ways that actually work:
   ```
   The `OU=` field in the output is the Team ID.
 
-Then:
+**Step 2 — put it in `App/project.yml`.** Open that file and set the
+value of `DEVELOPMENT_TEAM` in the project-level `settings:` block
+(top level, right below `options:` — it applies to every target):
+
+```yaml
+settings:
+  base:
+    DEVELOPMENT_TEAM: 7L38U9696P   # ← the Team ID from step 1
+    CODE_SIGN_STYLE: Automatic
+```
+
+This lives in project.yml rather than Xcode because the `.xcodeproj`
+is **gitignored and regenerated** by `xcodegen` — any signing setting
+you click into Xcode's *Signing & Capabilities* tab (including the
+step-1 dropdown pick) is erased on the next regeneration. Committing
+the ID is fine: it's embedded in every app binary you ship anyway.
+
+**Step 3 — regenerate and reopen:**
 
 ```sh
 cd App && xcodegen && open ColorByNumbers.xcodeproj
 ```
-
-(Committing the team ID to this personal repo is fine — it's embedded in
-every app binary you ship anyway.)
 
 ### 3. Prepare the iPad (once per device)
 
