@@ -315,6 +315,49 @@ private var repoRoot: URL {
     #expect(sample(0.4, 0.4).r > 200, "background lost")
 }
 
+/// Regression test for a real bug caught on the Studio grid: with a
+/// partial fill set, unfilled regions must paint OPAQUE WHITE, not skip
+/// their fill — painter's order stacks regions, so a skipped fill lets a
+/// filled container bleed through everything drawn above it (a colored
+/// sky showing through the unfilled sails sitting on it).
+@Test func unfilledRegionsStayOpaqueOverFilledContainers() {
+    let image = raster(
+        ["aaaaaaa",
+         "abbbbba",
+         "abcccba",
+         "abcccba",
+         "abcccba",
+         "abbbbba",
+         "aaaaaaa"],
+        colors: [
+            "a": (200, 40, 40),
+            "b": (40, 160, 60),
+            "c": (40, 80, 200),
+        ]
+    )
+    let template = ImportPipeline.importTemplate(
+        from: image,
+        title: "stack",
+        parameters: ImportParameters(colorCount: 8, minRegionMM: 2, detail: 1.0)
+    )
+    // Fill ONLY the outermost square (red) — the container drawn first.
+    let redNumber = template.palette.first { $0.hex == "#C82828" }!.number
+    let redID = template.regions.first { $0.colorNumber == redNumber }!.id
+    // .composite rather than .outline: identical partial-fill semantics,
+    // but no number glyphs — the innermost region is small enough that its
+    // number ink would land on any center sample point.
+    let rendered = TemplateRenderer.render(
+        template, mode: .composite, scale: 8, filledRegionIDs: [redID]
+    )!
+    // Outermost band: red. Middle ring and dead center: WHITE — they are
+    // unfilled regions stacked above the filled container.
+    #expect(pixelColor(in: rendered, x: Int(0.5 * 8), y: Int(3.5 * 8)).r > 150)
+    let middle = pixelColor(in: rendered, x: Int(1.5 * 8), y: Int(3.5 * 8))
+    #expect(middle.r > 200 && middle.g > 200 && middle.b > 200, "middle ring bled through")
+    let center = pixelColor(in: rendered, x: Int(3.5 * 8), y: Int(3.5 * 8))
+    #expect(center.r > 200 && center.g > 200 && center.b > 200, "center bled through")
+}
+
 /// Reads one pixel from a rendered CGImage (top-left origin, matching
 /// template coordinates).
 private func pixelColor(in image: CGImage, x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8) {

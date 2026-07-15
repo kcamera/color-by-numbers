@@ -79,28 +79,41 @@ public enum TemplateRenderer {
                 path.closeSubpath()
             }
 
-            // Nil filledRegionIDs reproduces today's per-mode default exactly
-            // (outline never fills; filled/composite always do). A non-nil
-            // set overrides both to "only the regions the child has actually
-            // colored" — the in-progress face described above.
-            let shouldPaintFill: Bool
-            switch mode {
-            case .outline:
-                shouldPaintFill = filledRegionIDs?.contains(region.id) ?? false
-            case .filled, .composite:
-                shouldPaintFill = filledRegionIDs?.contains(region.id) ?? true
-            }
-
-            if shouldPaintFill {
-                let rgb = colorsByNumber[region.colorNumber].flatMap { $0 }
-                context.setFillColor(
-                    CGColor(
+            // Nil filledRegionIDs reproduces the per-mode legacy behavior
+            // exactly (outline never fills; filled/composite fill every
+            // region). A non-nil set means "the in-progress face": EVERY
+            // region paints — its palette color if the child filled it,
+            // opaque WHITE if not. The white is load-bearing, not cosmetic:
+            // painter's order stacks regions (a sail draws over the sky it
+            // sits in), so skipping the fill on an unfilled region would
+            // let a filled container bleed through it. The interactive
+            // canvas paints unfilled regions white for the same reason;
+            // the two renderings must agree pixel-for-pixel.
+            var fillColor: CGColor? = nil
+            if let filledRegionIDs {
+                if filledRegionIDs.contains(region.id) {
+                    let rgb = colorsByNumber[region.colorNumber].flatMap { $0 }
+                    fillColor = CGColor(
                         srgbRed: CGFloat(rgb?.red ?? 0.5),
                         green: CGFloat(rgb?.green ?? 0.5),
                         blue: CGFloat(rgb?.blue ?? 0.5),
                         alpha: 1
                     )
+                } else {
+                    fillColor = CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+                }
+            } else if mode != .outline {
+                let rgb = colorsByNumber[region.colorNumber].flatMap { $0 }
+                fillColor = CGColor(
+                    srgbRed: CGFloat(rgb?.red ?? 0.5),
+                    green: CGFloat(rgb?.green ?? 0.5),
+                    blue: CGFloat(rgb?.blue ?? 0.5),
+                    alpha: 1
                 )
+            }
+
+            if let fillColor {
+                context.setFillColor(fillColor)
                 context.addPath(path)
                 context.fillPath(using: .evenOdd)
             }
