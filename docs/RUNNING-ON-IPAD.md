@@ -132,6 +132,16 @@ cd App && xcodegen && open ColorByNumbers.xcodeproj
 
 ## When things get weird
 
+- **"Your team has no devices from which to generate a provisioning
+  profile" / "No profiles for 'com.kcamera.ColorByNumbers' were found"**
+  — expected before the iPad has ever been paired, and it fixes itself.
+  Ignore the error's advice to add device IDs at developer.apple.com:
+  free Personal Teams have no Certificates, Identifiers & Profiles
+  portal at all (that page is paid-account territory — it's not missing,
+  it doesn't exist for you). The only way a Personal Team registers a
+  device is Xcode doing it automatically: connect the iPad and ⌘R
+  (the "Prepare the iPad" + "Every deploy" steps above). Both signing
+  warnings clear during that first device build.
 - **"Failed to prepare device / device not eligible"** — Xcode and iPadOS
   versions have drifted apart; update Xcode first, it's almost always that.
 - **App icon appears then won't launch (free account)** — the 7-day
