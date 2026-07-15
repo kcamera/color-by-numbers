@@ -51,6 +51,15 @@ final class StudioFlowUITests: XCTestCase {
         // Undo removes only the most recent fill, and saves that too.
         app.buttons["Undo"].tap()
         attachScreenshot(of: app, named: "4-after-undo")
+
+        // Studio-honesty check (M2 gate feedback): popping back to the
+        // grid must show the card's CURRENT coloring state, not a pristine
+        // outline — undo removed the sea and side-point fills but left the
+        // sky filled, so the sailboat's thumbnail should visibly show a
+        // colored sky.
+        app.staticTexts["Studio"].tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio grid did not reappear")
+        attachScreenshot(of: app, named: "5-studio-after-coloring")
     }
 
     @MainActor

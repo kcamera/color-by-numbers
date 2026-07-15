@@ -374,6 +374,81 @@ private func pixelColor(in image: CGImage, x: Int, y: Int) -> (r: UInt8, g: UInt
     }
 }
 
+// MARK: - Studio thumbnail face (filledRegionIDs)
+
+/// A tiny two-region template, hand-built rather than imported: the Studio
+/// thumbnail tests only care about TemplateRenderer's `filledRegionIDs`
+/// bookkeeping, not the import pipeline, so a synthetic document keeps them
+/// from depending on quantizer/tracer behavior incidentally.
+private func twoRegionTemplate() -> CBNTemplate {
+    CBNTemplate(
+        title: "two-region",
+        size: CBNSize(width: 20, height: 10),
+        palette: [
+            CBNPaletteEntry(number: 1, name: "left", hex: "#C82828"),
+            CBNPaletteEntry(number: 2, name: "right", hex: "#2850C8"),
+        ],
+        regions: [
+            CBNRegion(
+                id: "left",
+                colorNumber: 1,
+                path: [
+                    CBNPoint(x: 0, y: 0), CBNPoint(x: 10, y: 0),
+                    CBNPoint(x: 10, y: 10), CBNPoint(x: 0, y: 10),
+                ],
+                labelPoint: CBNPoint(x: 5, y: 5)
+            ),
+            CBNRegion(
+                id: "right",
+                colorNumber: 2,
+                path: [
+                    CBNPoint(x: 10, y: 0), CBNPoint(x: 20, y: 0),
+                    CBNPoint(x: 20, y: 10), CBNPoint(x: 10, y: 10),
+                ],
+                labelPoint: CBNPoint(x: 15, y: 5)
+            ),
+        ]
+    )
+}
+
+/// DESIGN.md's Studio-honesty requirement (the M2 gate feedback): a
+/// thumbnail must show what the child has actually colored, not a pristine
+/// outline. This is the renderer half of that — `.outline` mode with
+/// `filledRegionIDs` set bakes exactly the interactive canvas's appearance
+/// (CanvasView.draw) into a bitmap.
+@Test func outlineModeWithFilledRegionIDsPaintsOnlyThoseRegions() {
+    let template = twoRegionTemplate()
+    let rendered = TemplateRenderer.render(
+        template, mode: .outline, scale: 4, filledRegionIDs: ["left"]
+    )!
+
+    // Sampled near each region's corner, away from both its stroked border
+    // and its centered number glyph (drawn at labelPoint, the region's
+    // center) — a fill check must not accidentally hit ink instead of paint.
+    let leftCorner = pixelColor(in: rendered, x: 2 * 4, y: 2 * 4)
+    let rightCorner = pixelColor(in: rendered, x: 18 * 4, y: 2 * 4)
+
+    // "left" is filled: its palette red, not white.
+    #expect(leftCorner.r > 150 && leftCorner.g < 100, "filled region did not show its palette color")
+    // "right" is untouched: stays white, exactly like an uncolored region
+    // on the interactive canvas.
+    #expect(rightCorner.r > 230 && rightCorner.g > 230 && rightCorner.b > 230, "unfilled region was not white")
+}
+
+/// Regression guard: omitting `filledRegionIDs` (every existing call site —
+/// cbnc render/tune/suggest, and the Studio thumbnail's own old behavior)
+/// must still render `.outline` as pure white-and-numbers, unchanged.
+@Test func outlineModeWithNilFilledRegionIDsStaysAllWhite() {
+    let template = twoRegionTemplate()
+    let rendered = TemplateRenderer.render(template, mode: .outline, scale: 4)!
+
+    let leftCorner = pixelColor(in: rendered, x: 2 * 4, y: 2 * 4)
+    let rightCorner = pixelColor(in: rendered, x: 18 * 4, y: 2 * 4)
+
+    #expect(leftCorner.r > 230 && leftCorner.g > 230 && leftCorner.b > 230, "unfilled region was not white")
+    #expect(rightCorner.r > 230 && rightCorner.g > 230 && rightCorner.b > 230, "unfilled region was not white")
+}
+
 // MARK: - Presets
 
 @Test func bundledPresetsLoadAndAreOrdered() {
