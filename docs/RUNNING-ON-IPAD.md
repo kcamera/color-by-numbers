@@ -59,18 +59,22 @@ You'll see a "team" appear (e.g. "Kevin Camera (Personal Team)").
 
 ### 2. Tell the project about your team — in project.yml, NOT in Xcode
 
-The `.xcodeproj` is **gitignored and regenerated** by `xcodegen`, so any
-signing setting you click into Xcode's *Signing & Capabilities* tab is
-erased on the next regeneration. Signing config belongs in
-`App/project.yml`:
+**Already done in this repo** — `App/project.yml` carries the team in a
+project-level `settings:` block (right below `options:`, so it applies
+to every target):
 
 ```yaml
-    settings:
-      base:
-        # ...existing settings...
-        DEVELOPMENT_TEAM: XXXXXXXXXX   # your Team ID
-        CODE_SIGN_STYLE: Automatic
+settings:
+  base:
+    DEVELOPMENT_TEAM: 7L38U9696P
+    CODE_SIGN_STYLE: Automatic
 ```
+
+If the team ever changes (paid account, new Apple ID), edit that value
+and regenerate. It lives in project.yml rather than Xcode because the
+`.xcodeproj` is **gitignored and regenerated** by `xcodegen` — any
+signing setting you click into Xcode's *Signing & Capabilities* tab is
+erased on the next regeneration.
 
 Finding the 10-character Team ID is unhelpfully hidden for a free
 Personal Team — Xcode 26's Apple Accounts settings pane doesn't display
