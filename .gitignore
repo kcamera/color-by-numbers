@@ -9,3 +9,9 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Local-only test art: licensed/watermarked/otherwise-not-ours samples used
+# for private tuning and capability exploration. Never redistributed via
+# the repo. See TestArt/local/README.md.
+TestArt/local/*
+!TestArt/local/README.md

@@ -67,7 +67,7 @@ check).
 | Identity | Kid-first coloring experience; transformation is the shared magic; tuning knobs stay in the parent zone |
 | Agency | **Parent curates, child creates.** One parental gate at the "workshop" door. Everything kid-side is safe by construction |
 | Import v1 | Flat art only (line art, existing CBN pages). Photo import = v2 (same pipeline + pre-processing stages) |
-| Import UX | Preset cards ("Simple / Just Right / Detailed") rendered as live thumbnails of the actual image; raw sliders behind an "Adjust…" escape hatch in the workshop. Co-op couch ritual: kid points, parent drives, shared reveal |
+| Import UX | *(Revised at the M1 gate — supersedes the ideation's preset-card model.)* **Two live knobs** — palette size and smallest-region floor (mm) — with near-instant re-render; only ~25–30 total states, so the parent ratchets to taste with semi-instant feedback. Knob starting positions are inferred per image (fidelity-elbow → colors, dust metrics → floor) and restorable via a **reset control**. `presets.json` demotes to knob value ladders + default logic. No auto-dealt suggestions: a bad suggestion reads as the app failing; a bad transient knob state is just driving. Co-op couch ritual survives: kid points, parent dials, page lands on her desk. Rationale: M1 tuning proved no fixed parameter bundles fit all images, and metrics can filter degeneracy but can't rank semantics — the human eye stays in the loop where it's cheap |
 | Palette | Fixed, importer-assigned. No palette editing (that's a paint app; out of scope) |
 | Canvas modes | 1) Tap-to-fill (toddler) 2) Boundary-assist: strokes clipped to active region (preschool) 3) Freehand over template (elementary) |
 | Safety | No destructive actions in kid space: continuous autosave, generous undo, "color it again" creates a new attempt (old attempts kept; parent prunes) |
@@ -113,9 +113,15 @@ Three targets in one repo:
 3. **`ColorByNumbers`** iPad app — SwiftUI shell, PencilKit canvas.
    - **Studio** (kid space): library grid (newest first), canvas, mode switch,
      undo. Nothing destructive exists here.
-   - **Workshop** (behind parental gate): import flow (PhotosPicker → preset
-     triptych → reveal), library management (attempts, delete, rename), export,
-     session-limit settings, sound switch.
+   - **Workshop** (behind parental gate): import flow (PhotosPicker →
+     two-knob live preview → quiet add-to-library), library management
+     (attempts, delete, rename), export, session-limit settings, sound
+     switch. The workshop preview may show filled renders (parent quality
+     control); the kid side never leads with the filled "answer key" — a
+     new page arrives in the Studio as plain outlines on the desk, no
+     ceremony (the import "reveal" was cut at the M1 gate as front-loaded
+     reward stimulus; the only celebrated moment remains finished art
+     beside the original, at the end).
    - Canvas layering: template outlines+numbers / fills / PKCanvasView drawing
      layer; boundary-assist = clip strokes to active region mask.
    - Parental gate: a standard grown-up gate (e.g., hold two corners / spoken-
@@ -145,6 +151,10 @@ Three targets in one repo:
   README documents the loop so future-user or Sonnet can run it cold.
   Exit criteria: presets produce genuinely good templates on flat art without
   touching sliders.
+  *(Gate note, on close: met in substance — the pipeline produces genuinely
+  good templates and inferred defaults land close — but the tuning loop's own
+  evidence retired the fixed-preset model itself; see the revised Import UX
+  row and the deferred-pipeline-work list below.)*
 - **M2 — iPad walking skeleton** `[sonnet-ok]`
   Landscape-locked SwiftUI app, bundled starter templates, studio grid,
   **tap-to-fill mode**, continuous autosave. Runs on the real Air 4.
@@ -152,9 +162,12 @@ Three targets in one repo:
 - **M3 — Drawing modes** `[design-sensitive: canvas feel]`
   PencilKit integration: boundary-assist (region-clipped strokes) + freehand;
   undo; finger/Pencil parity; "color it again" attempts model.
-- **M4 — Workshop + import on device** `[mechanics sonnet-ok; reveal design-sensitive]`
-  Parental gate, co-op import flow with preset thumbnails, the **reveal**
-  (slow quiet crossfade — a designed moment, no fanfare), library management.
+- **M4 — Workshop + import on device** `[mechanics sonnet-ok; knob UX design-sensitive]`
+  Parental gate, co-op import flow with the **two-knob live preview**
+  (inferred starting positions + reset control; downscaled preview imports
+  for large sources, full-res on confirm; knob labels/wording designed here
+  with DESIGN.md open), quiet add-to-library (no reveal — cut at the M1
+  gate), library management.
 - **M5 — Export** `[sonnet-ok]`
   Finished art → Photos + AirPrint; outline+legend printable PDF; optional
   **cut-and-glue piece-sheet mode** — pieces carry their number on them (a
@@ -170,6 +183,32 @@ Three targets in one repo:
 - **M7 — App Store track (when/if desired)**
   Kids Category review prep, privacy labels (trivial: no data collected),
   signing/provisioning/TestFlight walkthrough — heavy hand-holding expected.
+
+## Deferred pipeline work (flagged during M1, not scheduled)
+
+Known-and-deliberate gaps in the import pipeline, in rough priority order.
+Pick these up when import quality work resumes ("more image processing");
+none block M2–M5:
+
+- **Color-aware small-region merging** — `mergeSmallRegions` absorbs into
+  the longest-border neighbor with no regard for color; thin bands beside
+  outlines can merge into black. Prefer perceptually-near neighbors.
+- **JPEG-artifact / noise handling** — noisy sources inflate the natural
+  color count (quantizer moonlights as denoiser) and mint dust regions; a
+  real denoise/artifact stage would decouple the knobs further.
+- **`mergeSmallRegions` performance** — full-image border recount per pass;
+  fine on flat art, the bottleneck on large/noisy input.
+- **Curve fitting / smoothing pass** — traced boundaries are polylines;
+  circles render faceted at high zoom. Also the prerequisite for any future
+  "calm shapes" dial (see dormant `detail`, below).
+- **Remove the dormant `detail` parameter** — pinned 1.0 everywhere since
+  M1; RDP below 1.0 only facets. Full removal checklist lives in
+  `ImportParameters.detail`'s doc comment.
+- **Downscaled preview imports** — knob-preview speed on large sources
+  (iPad, M4); full-resolution import on confirm.
+- **GPU acceleration** — considered during M1, not warranted at current
+  speeds (~0.2s/import release on M1 Mac); revisit only if photo-era
+  stages change the math.
 
 ## Verification
 

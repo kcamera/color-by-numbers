@@ -18,8 +18,9 @@ public struct CBNTemplate: Codable, Equatable, Sendable {
     public var palette: [CBNPaletteEntry]
     /// Regions in painter's order: later entries draw over earlier ones.
     /// This keeps hand-authored templates simple (a sun can sit "on" the
-    /// sky). Pipeline-produced regions are non-overlapping, so their order
-    /// is visually irrelevant.
+    /// sky, no hole needed). Pipeline-produced regions carry explicit
+    /// `holes` and paint exactly their own pixels, so their order is only
+    /// a cosmetic tiebreak for hairline overlaps left by simplification.
     public var regions: [CBNRegion]
 
     public init(
@@ -89,14 +90,52 @@ public struct CBNRegion: Codable, Equatable, Sendable {
     /// Closed polygon: the last point connects back to the first implicitly.
     /// (Curved boundaries arrive with the M1 pipeline's path smoothing.)
     public var path: [CBNPoint]
+    /// Closed polygons cut out of `path` (even-odd fill). Real line art
+    /// demands these: an eye outline with an attached pupil is one connected
+    /// region living at two nesting depths at once, which no painter's
+    /// ordering of hole-free polygons can draw correctly — it must paint
+    /// both before the eye white (it surrounds it) and after it (the pupil
+    /// sits inside it). With holes, every region paints exactly its own
+    /// pixels and draw order stops mattering for correctness. Empty for
+    /// simply-shaped regions; omitted from JSON when empty.
+    public var holes: [[CBNPoint]]
     /// Where the region's number label is drawn — must lie inside the region.
     public var labelPoint: CBNPoint
 
-    public init(id: String, colorNumber: Int, path: [CBNPoint], labelPoint: CBNPoint) {
+    public init(
+        id: String,
+        colorNumber: Int,
+        path: [CBNPoint],
+        holes: [[CBNPoint]] = [],
+        labelPoint: CBNPoint
+    ) {
         self.id = id
         self.colorNumber = colorNumber
         self.path = path
+        self.holes = holes
         self.labelPoint = labelPoint
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, colorNumber, path, holes, labelPoint
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        colorNumber = try container.decode(Int.self, forKey: .colorNumber)
+        path = try container.decode([CBNPoint].self, forKey: .path)
+        holes = try container.decodeIfPresent([[CBNPoint]].self, forKey: .holes) ?? []
+        labelPoint = try container.decode(CBNPoint.self, forKey: .labelPoint)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(colorNumber, forKey: .colorNumber)
+        try container.encode(path, forKey: .path)
+        if !holes.isEmpty { try container.encode(holes, forKey: .holes) }
+        try container.encode(labelPoint, forKey: .labelPoint)
     }
 }
 
