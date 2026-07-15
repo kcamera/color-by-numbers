@@ -142,6 +142,16 @@ cd App && xcodegen && open ColorByNumbers.xcodeproj
   device is Xcode doing it automatically: connect the iPad and ⌘R
   (the "Prepare the iPad" + "Every deploy" steps above). Both signing
   warnings clear during that first device build.
+- **No "Developer Mode" item in the iPad's Privacy & Security settings**
+  — the switch literally does not exist until a developer tool has
+  touched the device, and it lives at the very BOTTOM of that settings
+  pane once it does. First make sure the Mac truly sees the iPad
+  (Trust prompt appeared; iPad listed in Xcode's Window → Devices and
+  Simulators — if not, suspect a charge-only cable). If it's paired
+  and the switch still isn't there, select the iPad as the run
+  destination and ⌘R once anyway: the build fails with "Developer Mode
+  is disabled," and that failed attempt is what makes the switch
+  appear. Still missing → reboot the iPad with the cable connected.
 - **"Failed to prepare device / device not eligible"** — Xcode and iPadOS
   versions have drifted apart; update Xcode first, it's almost always that.
 - **App icon appears then won't launch (free account)** — the 7-day
