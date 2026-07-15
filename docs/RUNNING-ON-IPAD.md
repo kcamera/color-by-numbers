@@ -1,8 +1,35 @@
+# Running the app: Simulator and the real iPad
+
+The hand-holding guide, written for someone with zero prior iOS
+deployment experience. Two halves: the Simulator (no signing, no Apple
+ID, works immediately) and the physical Air 4 (signing/provisioning).
+
+## Running in the Simulator (no setup beyond Xcode)
+
+1. ```sh
+   cd App && xcodegen        # regenerates the gitignored .xcodeproj
+   open ColorByNumbers.xcodeproj
+   ```
+2. In Xcode's toolbar (top center) there are two dropdowns next to the
+   ▶ button: the **scheme** (leave it on "ColorByNumbers") and the
+   **destination**. Click the destination and pick any iPad under
+   "iOS Simulators" — e.g. "iPad (A16)". No iPad listed? Xcode →
+   Settings… → Components and download an iOS Simulator runtime.
+3. **⌘R**. First launch takes a minute (the simulator boots like a real
+   device); after that it's seconds. The app is landscape-only — if the
+   simulator window comes up in portrait you'll see the app letterboxed;
+   rotate with **⌘→** (Device → Rotate Right).
+4. Interact with the mouse: click = tap. Quit the simulator app entirely
+   with ⌘Q when done (leaving it running is also fine and makes the next
+   ⌘R faster).
+
+Simulator limits worth knowing: no Apple Pencil, no real touch feel, and
+performance isn't representative — it's for layout and logic. The feel
+test (the one that matters for a 5-year-old) only happens on the device.
+
 # Running on the real iPad (signing, provisioning, deploying)
 
-The hand-holding guide for getting builds onto the family Air 4. Written
-for someone with zero prior iOS deployment experience. The Simulator needs
-none of this — it's only the physical device that involves signing.
+Everything below is device-only — the Simulator needs none of it.
 
 ## One-time setup
 
