@@ -11,6 +11,12 @@ final class StudioFlowUITests: XCTestCase {
 
     @MainActor
     func testTapToFillPersistsAcrossRelaunch() throws {
+        // Rotate the simulated device to landscape first: on iPadOS 26's
+        // windowing model a landscape-only app in a portrait device renders
+        // upright-but-scaled (not rotated), which would letterbox every
+        // screenshot below and skew the normalized tap coordinates.
+        XCUIDevice.shared.orientation = .landscapeLeft
+
         let app = XCUIApplication()
         app.launch()
 

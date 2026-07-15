@@ -16,9 +16,18 @@ ID, works immediately) and the physical Air 4 (signing/provisioning).
    "iOS Simulators" — e.g. "iPad (A16)". No iPad listed? Xcode →
    Settings… → Components and download an iOS Simulator runtime.
 3. **⌘R**. First launch takes a minute (the simulator boots like a real
-   device); after that it's seconds. The app is landscape-only — if the
-   simulator window comes up in portrait you'll see the app letterboxed;
-   rotate with **⌘→** (Device → Rotate Right).
+   device); after that it's seconds. The app is landscape-only — rotate
+   the simulator with **⌘→** (Device → Rotate Right) if it comes up in
+   portrait.
+
+   What you'll see in portrait depends on the iPadOS version. Through
+   iPadOS 18, a landscape-only app renders sideways at full size (the
+   classic "turn the device" behavior). iPadOS 26's windowing model
+   deprecates `UIRequiresFullScreen` and treats orientation as an aspect
+   preference instead: the landscape window is shown upright, scaled
+   down to fit portrait width. Both are system presentation choices —
+   the app itself is always internally landscape, and fills the screen
+   the moment the device rotates.
 4. Interact with the mouse: click = tap. Quit the simulator app entirely
    with ⌘Q when done (leaving it running is also fine and makes the next
    ⌘R faster).
