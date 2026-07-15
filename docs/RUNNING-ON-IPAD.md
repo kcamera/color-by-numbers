@@ -72,9 +72,30 @@ erased on the next regeneration. Signing config belongs in
         CODE_SIGN_STYLE: Automatic
 ```
 
-Find your Team ID in Xcode → Settings… → Accounts → (select the team) —
-it's the 10-character string, or shown as "Team ID" on
-developer.apple.com/account for paid accounts. Then:
+Finding the 10-character Team ID is unhelpfully hidden for a free
+Personal Team — Xcode 26's Apple Accounts settings pane doesn't display
+it, and there's no developer.apple.com account page to read it from.
+Two ways that actually work:
+
+- **Via the project (easiest):** open the project, select the
+  ColorByNumbers target → *Signing & Capabilities* → pick your Personal
+  Team in the Team dropdown. That click writes the ID into the generated
+  project; read it back with:
+  ```sh
+  grep -m1 DEVELOPMENT_TEAM App/ColorByNumbers.xcodeproj/project.pbxproj
+  ```
+  Copy the 10-character value into `project.yml` (the click itself will
+  be erased on the next `xcodegen` — the yml is what makes it stick).
+- **Via your signing certificate:** in Settings… → Apple Accounts →
+  *Manage Certificates…*, click "+" → "Apple Development" if the list is
+  empty. Then:
+  ```sh
+  security find-certificate -c "Apple Development" -p | \
+    openssl x509 -noout -subject
+  ```
+  The `OU=` field in the output is the Team ID.
+
+Then:
 
 ```sh
 cd App && xcodegen && open ColorByNumbers.xcodeproj
