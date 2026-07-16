@@ -1,0 +1,57 @@
+---
+name: verify
+description: Build, launch, and drive the ColorByNumbers iPad app on a simulator to verify changes at the GUI surface, with screenshot + on-disk evidence.
+---
+
+# Verifying ColorByNumbers changes
+
+Two surfaces in this repo:
+
+- **CBNKit / cbnc (CLI)**: `swift build -c release` then drive
+  `./.build/release/cbnc import|render|tune|suggest` against `TestArt/`
+  and *look at the rendered PNGs* (the Read tool displays them). Always
+  use `-c release` — debug is ~30× slower.
+- **The iPad app (GUI)**: XCUITest is the driving harness — `simctl` has
+  no tap primitive, and idb/cliclick aren't installed.
+
+## App drive recipe (works, verified 2026-07-15)
+
+```sh
+cd App && xcodegen                       # .xcodeproj is gitignored, always regen
+xcrun simctl boot "iPad (A16)"           # if not already Booted (simctl list devices)
+rm -rf /tmp/verify.xcresult
+xcodebuild -project ColorByNumbers.xcodeproj -scheme ColorByNumbers \
+  -destination 'platform=iOS Simulator,name=iPad (A16)' \
+  test -only-testing:ColorByNumbersUITests \
+  -resultBundlePath /tmp/verify.xcresult
+```
+
+The driver lives in `App/ColorByNumbersUITests/StudioFlowUITests.swift` —
+extend it (or add siblings) to reach new flows. It captures named
+screenshot attachments at checkpoints; keep that pattern.
+
+## Evidence extraction
+
+```sh
+# Screenshots out of the result bundle (manifest.json maps names → files):
+xcrun xcresulttool export attachments --path /tmp/verify.xcresult --output-path /tmp/shots
+
+# The app's real persisted state (autosave contract evidence):
+CONTAINER=$(xcrun simctl get_app_container booted com.kcamera.ColorByNumbers data)
+find "$CONTAINER/Documents/Library" -name '*.json'   # items + attempts
+```
+
+## Gotchas
+
+- `cd App` first or use paths relative to repo root consistently —
+  the project is `App/ColorByNumbers.xcodeproj`.
+- A UI-test target needs `GENERATE_INFOPLIST_FILE: YES` in project.yml
+  (already set); regen with xcodegen after any project.yml edit.
+- `-resultBundlePath` refuses to overwrite: `rm -rf` it first.
+- Portrait-simulator screenshots of this landscape-locked app letterbox
+  with black bars — cosmetic, not a bug.
+- Uninstall the app (`simctl uninstall booted com.kcamera.ColorByNumbers`)
+  to reset the library and re-test first-launch seeding.
+- UI-test buttons: undo is reachable as `app.buttons["Undo"]`
+  (accessibility label), back control via `app.staticTexts["Studio"]`,
+  studio cards via their title text.

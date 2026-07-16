@@ -9,6 +9,13 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 
+# Project-level so every target (app + UI-test runner) signs the same way.
+# Committing the Team ID is fine — it ships inside every app binary anyway.
+settings:
+  base:
+    DEVELOPMENT_TEAM: 7L38U9696P
+    CODE_SIGN_STYLE: Automatic
+
 packages:
   ColorByNumbersPackage:
     path: ..
@@ -18,7 +25,13 @@ targets:
     type: application
     platform: iOS
     sources:
-      - ColorByNumbers
+      - path: ColorByNumbers
+        excludes:
+          - Resources
+      # Starter templates (and future bundled assets) are declared as an
+      # explicit resources phase rather than trusting extension inference.
+      - path: ColorByNumbers/Resources
+        buildPhase: resources
     dependencies:
       - package: ColorByNumbersPackage
         product: CBNKit
@@ -40,3 +53,21 @@ targets:
         SWIFT_VERSION: "6.0"
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 0.1.0
+    scheme:
+      testTargets:
+        - ColorByNumbersUITests
+
+  # Runtime-verification driver, not a unit-test suite: drives the real app
+  # through the studio/canvas flow on a simulator and captures screenshot
+  # evidence (CBNKit's logic tests live in the SwiftPM package instead).
+  ColorByNumbersUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - ColorByNumbersUITests
+    dependencies:
+      - target: ColorByNumbers
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"

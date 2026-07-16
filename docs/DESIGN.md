@@ -67,19 +67,29 @@ One parental gate, at the **Workshop** door. Everything on the child's side
   new attempt; old attempts remain (parents prune in the Workshop). Attempts
   over months become a visible record of a child's growing motor control.
 - **Import is a co-op couch ritual.** Kid points and chooses ("that one!"),
-  parent operates the gate and the fiddly parts, both watch the reveal.
-  New projects appear at the front of the Studio library — zero navigation
-  friction between "we made this together" and "go play."
+  parent operates the gate and the knobs. New projects appear at the front
+  of the Studio library as fresh outlines — zero navigation friction
+  between "we made this together" and "go play."
 
 ## The transformation experience
 
-- **Presets over parameters.** The kid-visible import choice is 2–4 preset
-  cards ("Simple / Just Right / Detailed") rendered as live thumbnails of
-  *this actual image* — a visual choice, not a numeric one. Raw sliders live
-  behind an "Adjust…" escape hatch in the Workshop. Good defaults are a hard
-  requirement on the pipeline, not a UI nicety.
-- **The reveal is a designed moment.** A slow, quiet crossfade from picture
-  to line art. No fanfare, no chimes. "Look what it became."
+*(Amended by the user at the M1 gate, 2026-07-14 — supersedes the original
+"preset cards + reveal" ideation. Rationale in docs/PLAN.md.)*
+
+- **Two knobs, live preview.** The Workshop import flow is two dials —
+  palette size and smallest-region floor — re-rendering near-instantly as
+  the parent ratchets. Starting positions are inferred per image and
+  restorable via a reset control. The app never *recommends* (a bad
+  suggestion is the app failing; a transient knob state is just driving),
+  and good inferred defaults are a hard requirement on the pipeline: not
+  touching the knobs must yield a decent template.
+- **No reveal.** The old "designed crossfade moment" was front-loaded
+  reward stimulus — payoff before any work — and showing the app's filled
+  rendering before coloring frames the activity as matching an answer key.
+  Filled previews exist only in the Workshop (parent quality control). A
+  new page arrives in the Studio as what it honestly is: fresh outlines on
+  the desk, no ceremony. The only celebrated moment remains the child's
+  finished art beside the original, at the end.
 - Templates should err toward big, friendly, colorable regions. A region too
   small for a small finger (or scissors, for the cut-and-glue export) is a
   pipeline bug, not a user error.

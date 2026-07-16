@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "title": "Little Sailboat",
+  "size": { "width": 1600, "height": 1200 },
+  "palette": [
+    { "number": 1, "name": "Morning Sky", "hex": "#BFE3F0" },
+    { "number": 2, "name": "Sunlight", "hex": "#F5D76E" },
+    { "number": 3, "name": "Deep Sea", "hex": "#3E6E8E" },
+    { "number": 4, "name": "Hull Red", "hex": "#B4553F" },
+    { "number": 5, "name": "Sailcloth", "hex": "#F4EEDF" }
+  ],
+  "regions": [
+    {
+      "id": "sky",
+      "colorNumber": 1,
+      "path": [[0, 0], [1600, 0], [1600, 800], [0, 800]],
+      "labelPoint": [300, 350]
+    },
+    {
+      "id": "sea",
+      "colorNumber": 3,
+      "path": [[0, 800], [1600, 800], [1600, 1200], [0, 1200]],
+      "labelPoint": [300, 1050]
+    },
+    {
+      "id": "sun",
+      "colorNumber": 2,
+      "path": [[1300, 60], [1400, 60], [1470, 130], [1470, 230], [1400, 300], [1300, 300], [1230, 230], [1230, 130]],
+      "labelPoint": [1350, 180]
+    },
+    {
+      "id": "hull",
+      "colorNumber": 4,
+      "path": [[550, 860], [1050, 860], [950, 960], [650, 960]],
+      "labelPoint": [800, 905]
+    },
+    {
+      "id": "main-sail",
+      "colorNumber": 5,
+      "path": [[790, 300], [790, 830], [1040, 830]],
+      "labelPoint": [860, 740]
+    },
+    {
+      "id": "jib-sail",
+      "colorNumber": 5,
+      "path": [[760, 360], [760, 830], [560, 830]],
+      "labelPoint": [710, 750]
+    }
+  ]
+}

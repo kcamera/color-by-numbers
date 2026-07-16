@@ -315,6 +315,49 @@ private var repoRoot: URL {
     #expect(sample(0.4, 0.4).r > 200, "background lost")
 }
 
+/// Regression test for a real bug caught on the Studio grid: with a
+/// partial fill set, unfilled regions must paint OPAQUE WHITE, not skip
+/// their fill — painter's order stacks regions, so a skipped fill lets a
+/// filled container bleed through everything drawn above it (a colored
+/// sky showing through the unfilled sails sitting on it).
+@Test func unfilledRegionsStayOpaqueOverFilledContainers() {
+    let image = raster(
+        ["aaaaaaa",
+         "abbbbba",
+         "abcccba",
+         "abcccba",
+         "abcccba",
+         "abbbbba",
+         "aaaaaaa"],
+        colors: [
+            "a": (200, 40, 40),
+            "b": (40, 160, 60),
+            "c": (40, 80, 200),
+        ]
+    )
+    let template = ImportPipeline.importTemplate(
+        from: image,
+        title: "stack",
+        parameters: ImportParameters(colorCount: 8, minRegionMM: 2, detail: 1.0)
+    )
+    // Fill ONLY the outermost square (red) — the container drawn first.
+    let redNumber = template.palette.first { $0.hex == "#C82828" }!.number
+    let redID = template.regions.first { $0.colorNumber == redNumber }!.id
+    // .composite rather than .outline: identical partial-fill semantics,
+    // but no number glyphs — the innermost region is small enough that its
+    // number ink would land on any center sample point.
+    let rendered = TemplateRenderer.render(
+        template, mode: .composite, scale: 8, filledRegionIDs: [redID]
+    )!
+    // Outermost band: red. Middle ring and dead center: WHITE — they are
+    // unfilled regions stacked above the filled container.
+    #expect(pixelColor(in: rendered, x: Int(0.5 * 8), y: Int(3.5 * 8)).r > 150)
+    let middle = pixelColor(in: rendered, x: Int(1.5 * 8), y: Int(3.5 * 8))
+    #expect(middle.r > 200 && middle.g > 200 && middle.b > 200, "middle ring bled through")
+    let center = pixelColor(in: rendered, x: Int(3.5 * 8), y: Int(3.5 * 8))
+    #expect(center.r > 200 && center.g > 200 && center.b > 200, "center bled through")
+}
+
 /// Reads one pixel from a rendered CGImage (top-left origin, matching
 /// template coordinates).
 private func pixelColor(in image: CGImage, x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
@@ -372,6 +415,81 @@ private func pixelColor(in image: CGImage, x: Int, y: Int) -> (r: UInt8, g: UInt
             .min()!
         #expect(closest < 0.06, "palette color \(entry.hex) drifted through the pipeline")
     }
+}
+
+// MARK: - Studio thumbnail face (filledRegionIDs)
+
+/// A tiny two-region template, hand-built rather than imported: the Studio
+/// thumbnail tests only care about TemplateRenderer's `filledRegionIDs`
+/// bookkeeping, not the import pipeline, so a synthetic document keeps them
+/// from depending on quantizer/tracer behavior incidentally.
+private func twoRegionTemplate() -> CBNTemplate {
+    CBNTemplate(
+        title: "two-region",
+        size: CBNSize(width: 20, height: 10),
+        palette: [
+            CBNPaletteEntry(number: 1, name: "left", hex: "#C82828"),
+            CBNPaletteEntry(number: 2, name: "right", hex: "#2850C8"),
+        ],
+        regions: [
+            CBNRegion(
+                id: "left",
+                colorNumber: 1,
+                path: [
+                    CBNPoint(x: 0, y: 0), CBNPoint(x: 10, y: 0),
+                    CBNPoint(x: 10, y: 10), CBNPoint(x: 0, y: 10),
+                ],
+                labelPoint: CBNPoint(x: 5, y: 5)
+            ),
+            CBNRegion(
+                id: "right",
+                colorNumber: 2,
+                path: [
+                    CBNPoint(x: 10, y: 0), CBNPoint(x: 20, y: 0),
+                    CBNPoint(x: 20, y: 10), CBNPoint(x: 10, y: 10),
+                ],
+                labelPoint: CBNPoint(x: 15, y: 5)
+            ),
+        ]
+    )
+}
+
+/// DESIGN.md's Studio-honesty requirement (the M2 gate feedback): a
+/// thumbnail must show what the child has actually colored, not a pristine
+/// outline. This is the renderer half of that — `.outline` mode with
+/// `filledRegionIDs` set bakes exactly the interactive canvas's appearance
+/// (CanvasView.draw) into a bitmap.
+@Test func outlineModeWithFilledRegionIDsPaintsOnlyThoseRegions() {
+    let template = twoRegionTemplate()
+    let rendered = TemplateRenderer.render(
+        template, mode: .outline, scale: 4, filledRegionIDs: ["left"]
+    )!
+
+    // Sampled near each region's corner, away from both its stroked border
+    // and its centered number glyph (drawn at labelPoint, the region's
+    // center) — a fill check must not accidentally hit ink instead of paint.
+    let leftCorner = pixelColor(in: rendered, x: 2 * 4, y: 2 * 4)
+    let rightCorner = pixelColor(in: rendered, x: 18 * 4, y: 2 * 4)
+
+    // "left" is filled: its palette red, not white.
+    #expect(leftCorner.r > 150 && leftCorner.g < 100, "filled region did not show its palette color")
+    // "right" is untouched: stays white, exactly like an uncolored region
+    // on the interactive canvas.
+    #expect(rightCorner.r > 230 && rightCorner.g > 230 && rightCorner.b > 230, "unfilled region was not white")
+}
+
+/// Regression guard: omitting `filledRegionIDs` (every existing call site —
+/// cbnc render/tune/suggest, and the Studio thumbnail's own old behavior)
+/// must still render `.outline` as pure white-and-numbers, unchanged.
+@Test func outlineModeWithNilFilledRegionIDsStaysAllWhite() {
+    let template = twoRegionTemplate()
+    let rendered = TemplateRenderer.render(template, mode: .outline, scale: 4)!
+
+    let leftCorner = pixelColor(in: rendered, x: 2 * 4, y: 2 * 4)
+    let rightCorner = pixelColor(in: rendered, x: 18 * 4, y: 2 * 4)
+
+    #expect(leftCorner.r > 230 && leftCorner.g > 230 && leftCorner.b > 230, "unfilled region was not white")
+    #expect(rightCorner.r > 230 && rightCorner.g > 230 && rightCorner.b > 230, "unfilled region was not white")
 }
 
 // MARK: - Presets
