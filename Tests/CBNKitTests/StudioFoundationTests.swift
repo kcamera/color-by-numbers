@@ -234,6 +234,102 @@ private let v1AttemptJSON = """
     #expect(attempt.drawingData == nil)
 }
 
+// MARK: - CBNAttempt.actionLog (M3 interleaved undo)
+
+/// Same v1 fixture as above, missing `actionLog` entirely (it predates the
+/// field just as much as `drawingData` does): decodes with a nil stored log,
+/// and `effectiveActionLog` must reconstruct the only history a pre-log
+/// attempt could have — one `.fill` per filled region, in order.
+@Test func attemptDecodesV1JSONMissingActionLogAsNilWithReconstructedEffectiveLog() throws {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let attempt = try decoder.decode(CBNAttempt.self, from: Data(v1AttemptJSON.utf8))
+
+    #expect(attempt.actionLog == nil)
+    #expect(attempt.effectiveActionLog == [.fill])
+}
+
+/// A brand-new attempt also starts with a nil stored log (materialized only
+/// on first touch) but an empty effective one — no fills, no strokes, no
+/// history yet.
+@Test func attemptFreshEffectiveActionLogIsEmpty() {
+    let attempt = CBNAttempt()
+    #expect(attempt.actionLog == nil)
+    #expect(attempt.effectiveActionLog.isEmpty)
+}
+
+/// The whole point of the log: fills and strokes interleaved must come back
+/// out in the exact order they happened, not grouped by kind.
+@Test func attemptInterleavedFillAndStrokeLogPreservesOrder() {
+    var attempt = CBNAttempt()
+    attempt.fill("r0")
+    attempt.recordStroke(Data([0x01]))
+    attempt.fill("r1")
+
+    #expect(attempt.effectiveActionLog == [.fill, .stroke, .fill])
+    #expect(attempt.filledRegionIDs == ["r0", "r1"])
+    #expect(attempt.drawingData == Data([0x01]))
+}
+
+/// `undoLastFill` pops the log's trailing entry along with the region,
+/// leaving the stroke in between untouched.
+@Test func attemptUndoLastFillPopsTrailingLogEntry() {
+    var attempt = CBNAttempt()
+    attempt.fill("r0")
+    attempt.recordStroke(Data([0x01]))
+    attempt.fill("r1")
+
+    attempt.undoLastFill()
+
+    #expect(attempt.filledRegionIDs == ["r0"])
+    #expect(attempt.effectiveActionLog == [.fill, .stroke])
+}
+
+/// `undoLastStroke` pops the log's trailing entry and installs the caller's
+/// re-serialized drawing (here, `nil` — the caller removed the only stroke).
+@Test func attemptUndoLastStrokePopsTrailingLogEntryAndAssignsDrawing() {
+    var attempt = CBNAttempt()
+    attempt.fill("r0")
+    attempt.recordStroke(Data([0x01, 0x02]))
+
+    attempt.undoLastStroke(updatedDrawing: nil)
+
+    #expect(attempt.drawingData == nil)
+    #expect(attempt.effectiveActionLog == [.fill])
+}
+
+/// `recordStroke` bumps `updatedAt` monotonically, mirroring `fill`.
+@Test func attemptRecordStrokeBumpsUpdatedAt() {
+    var attempt = CBNAttempt()
+    let created = attempt.updatedAt
+    attempt.recordStroke(Data([0xFF]))
+    #expect(attempt.updatedAt > created)
+}
+
+/// `recordStroke` round-trips through `CBNLibrary` exactly like `setDrawing`
+/// already does — the log is part of the same JSON blob, no separate path.
+@Test func libraryRecordStrokeRoundTripsActionLogThroughSaveAttemptAndLatestAttempt() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Drawn With Log"))
+    // Bump `updatedAt` comfortably past "now" AFTER the mutations that would
+    // otherwise set it there themselves — same race `librarySaveAttemptAndLatestAttemptRoundTrip`
+    // avoids: `add` also seeds an empty attempt at "now", and `.iso8601`'s
+    // whole-second resolution can tie the two, leaving `latestAttempt`'s tie
+    // -break to fall back to comparing UUIDs (a coin flip, not this test's
+    // concern).
+    var attempt = CBNAttempt()
+    attempt.fill("r0")
+    attempt.recordStroke(Data([0xDE, 0xAD, 0xBE, 0xEF]))
+    attempt.updatedAt = Date().addingTimeInterval(60)
+    try library.saveAttempt(attempt, in: item.id)
+
+    let latest = try library.latestAttempt(in: item.id)
+    #expect(latest?.drawingData == Data([0xDE, 0xAD, 0xBE, 0xEF]))
+    #expect(latest?.effectiveActionLog == [.fill, .stroke])
+}
+
 // MARK: - CBNLibrary
 
 /// A fresh, uniquely-named temp directory per call — tests never share
@@ -318,7 +414,12 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     defer { try? FileManager.default.removeItem(at: root) }
 
     let item = try library.add(sampleTemplate(title: "Drawn"))
-    var attempt = CBNAttempt()
+    // Explicitly-later dates: `add` seeds an attempt in the same wall-clock
+    // second, and a same-encoded-second tie would fall through latestAttempt's
+    // deterministic-but-arbitrary final tie-break (lexicographic UUID) — a
+    // coin flip per run. Same rationale as libraryAttemptsOrdersNewestFirst.
+    let later = Date().addingTimeInterval(10)
+    var attempt = CBNAttempt(createdAt: later, updatedAt: later)
     attempt.setDrawing(Data([0xDE, 0xAD, 0xBE, 0xEF]))
     try library.saveAttempt(attempt, in: item.id)
 
