@@ -380,15 +380,24 @@ private func sampleTemplate(title: String) -> CBNTemplate {
 }
 
 /// Forces the same-second collision rather than hoping to dodge it: several
-/// `newAttempt` calls inside one wall-clock second must still produce
-/// strictly increasing on-disk timestamps (via the synthetic +1s bump), so
-/// "latest" never degrades to directory iteration order.
+/// resets inside one wall-clock second must still produce strictly
+/// increasing on-disk timestamps (via the synthetic +1s bump), so "latest"
+/// never degrades to directory iteration order. Each attempt gets a fill
+/// first — a pristine attempt would just be returned as-is.
 @Test func libraryRapidNewAttemptsStayStrictlyOrderedOnDisk() throws {
     let (library, root) = makeTempLibrary()
     defer { try? FileManager.default.removeItem(at: root) }
 
     let item = try library.add(sampleTemplate(title: "Rapid"))
+    var first = try library.latestAttempt(in: item.id)!
+    first.fill("r0")
+    try library.saveAttempt(first, in: item.id)
+
     let second = try library.newAttempt(in: item.id)
+    var secondFilled = second
+    secondFilled.fill("r0")
+    try library.saveAttempt(secondFilled, in: item.id)
+
     let third = try library.newAttempt(in: item.id)
     #expect(second.createdAt < third.createdAt)
 
@@ -399,6 +408,51 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     #expect(all.map(\.id).first == third.id)
     #expect(zip(all, all.dropFirst()).allSatisfy { $0.createdAt > $1.createdAt })
     #expect(try library.latestAttempt(in: item.id)?.id == third.id)
+}
+
+/// Button-mash protection: "color it again" on an untouched canvas is a
+/// no-op — the pristine attempt is returned as-is and nothing new lands on
+/// disk, no matter how many times the button is hit.
+@Test func libraryNewAttemptOnPristineCanvasIsANoOp() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Mash"))
+    let seeded = try library.latestAttempt(in: item.id)!
+
+    for _ in 1...5 {
+        let result = try library.newAttempt(in: item.id)
+        #expect(result.id == seeded.id)
+    }
+    #expect(try library.attempts(in: item.id).count == 1)
+}
+
+/// The archive is a ring buffer, not a landfill: cycling fill→reset more
+/// times than the cap leaves exactly current + cap attempts on disk, with
+/// the OLDEST ones rolled off — the newest archive entry (the work just
+/// reset) is always among the survivors.
+@Test func libraryNewAttemptRollsOldestArchivedAttemptsOffTheRing() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Cycle"))
+    var archivedIDs: [String] = []
+    for cycle in 1...5 {
+        var current = try library.latestAttempt(in: item.id)!
+        current.fill("r\(cycle)")
+        try library.saveAttempt(current, in: item.id)
+        archivedIDs.append(current.id)
+        try library.newAttempt(in: item.id)
+    }
+
+    let survivors = try library.attempts(in: item.id)
+    #expect(survivors.count == CBNLibrary.archivedAttemptCap + 1)
+    let survivorIDs = Set(survivors.map(\.id))
+    // Newest three archives survive; the two oldest rolled off.
+    #expect(survivorIDs.isSuperset(of: archivedIDs.suffix(3)))
+    #expect(survivorIDs.isDisjoint(with: archivedIDs.prefix(2)))
+    // The current (pristine, post-reset) attempt is the latest.
+    #expect(try library.latestAttempt(in: item.id)?.isPristine == true)
 }
 
 @Test func librarySeedIfEmptySeedsOnceThenBecomesANoOp() throws {

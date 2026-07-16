@@ -63,9 +63,18 @@ One parental gate, at the **Workshop** door. Everything on the child's side
   anything, including mid-stroke power loss.
 - **Generous, always-available undo.** Mistakes are how fine motor skills
   grow; undo is what makes them safe.
-- **"Color it again," never "start over."** Re-coloring a template creates a
-  new attempt; old attempts remain (parents prune in the Workshop). Attempts
-  over months become a visible record of a child's growing motor control.
+- **"Color it again" feels like reset — and destroys nothing.** (Amended at
+  M3.) To the child it's a fresh page: canvas clears, the Studio card resets,
+  no version browser anywhere. Underneath, the attempt she walked away from
+  is kept invisibly as the newest archive entry, so one tap can never cause
+  irreversible loss. Two guards keep the archive honest: resetting an
+  untouched canvas is a no-op (an empty attempt carries no information —
+  button-mashing archives nothing), and each picture keeps only the newest
+  few non-empty attempts (a ring buffer; the oldest roll off by themselves,
+  so parents never inherit a cleanup chore). The Workshop (M4) can restore
+  or prune what the ring holds. Rationale for the trim: the assisted modes
+  can only converge to the intended image — there's no variety worth
+  archiving; freehand variety is kept simply by *not* resetting.
 - **Import is a co-op couch ritual.** Kid points and chooses ("that one!"),
   parent operates the gate and the knobs. New projects appear at the front
   of the Studio library as fresh outlines — zero navigation friction

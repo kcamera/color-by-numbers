@@ -42,10 +42,17 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
     /// no-op if it's already filled — a second tap on an already-colored
     /// region is not a new action, and must not let a child duplicate an
     /// entry in the undo stack.
+    ///
+    /// `max(Date(), updatedAt)` — here and in every mutation — keeps
+    /// `updatedAt` monotonic: `CBNLibrary.newAttempt` may stamp a fresh
+    /// attempt up to a few seconds into the "future" (its whole-second
+    /// collision bump), and a plain `Date()` on the child's very next
+    /// action would drag `updatedAt` back BELOW `createdAt`, tying with
+    /// the just-archived attempt and making "latest" ambiguous again.
     public mutating func fill(_ regionID: String) {
         guard !filledRegionIDs.contains(regionID) else { return }
         filledRegionIDs.append(regionID)
-        updatedAt = Date()
+        updatedAt = max(Date(), updatedAt)
     }
 
     /// Removes the most recently filled region, if any — the undo button's
@@ -54,7 +61,7 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
     public mutating func undoLastFill() {
         guard !filledRegionIDs.isEmpty else { return }
         filledRegionIDs.removeLast()
-        updatedAt = Date()
+        updatedAt = max(Date(), updatedAt)
     }
 
     /// Assigns the drawing blob and bumps `updatedAt`, mirroring `fill` and
@@ -65,7 +72,15 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
     /// protect the undo stack from.
     public mutating func setDrawing(_ data: Data?) {
         drawingData = data
-        updatedAt = Date()
+        updatedAt = max(Date(), updatedAt)
+    }
+
+    /// True when nothing has ever been colored here: no fills, no drawn
+    /// strokes. "Color it again" cares (CBNLibrary.newAttempt): resetting a
+    /// pristine attempt is a no-op, and a pristine attempt is never worth
+    /// archiving — it carries zero information.
+    public var isPristine: Bool {
+        filledRegionIDs.isEmpty && (drawingData?.isEmpty ?? true)
     }
 
     public func isFilled(_ regionID: String) -> Bool {
