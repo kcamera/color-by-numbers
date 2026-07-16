@@ -12,17 +12,30 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
     /// Region ids filled so far, in the order the child filled them. An
     /// ordered array, not a Set, because order IS the undo stack.
     public var filledRegionIDs: [String]
+    /// Opaque serialized-PencilKit-drawing blob for boundary-assist/freehand
+    /// modes (DESIGN.md's skill ladder). CBNKit also builds for macOS (the
+    /// cbnc CLI), so it must never import PencilKit or any UI framework —
+    /// to CBNKit this is just bytes it persists untouched on the app's
+    /// behalf. `Optional` rather than defaulting to empty `Data` so tap-to-fill
+    /// attempts (which never draw) stay distinguishable from a drawing that's
+    /// merely empty, and so it round-trips through Swift's synthesized
+    /// Codable as an absent key rather than a required one — M2 attempt
+    /// JSONs already on real iPads predate this field entirely and must
+    /// still decode.
+    public var drawingData: Data?
 
     public init(
         id: String = UUID().uuidString,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        filledRegionIDs: [String] = []
+        filledRegionIDs: [String] = [],
+        drawingData: Data? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.filledRegionIDs = filledRegionIDs
+        self.drawingData = drawingData
     }
 
     /// Appends `regionID` to the fill order and bumps `updatedAt`. A total
@@ -41,6 +54,17 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
     public mutating func undoLastFill() {
         guard !filledRegionIDs.isEmpty else { return }
         filledRegionIDs.removeLast()
+        updatedAt = Date()
+    }
+
+    /// Assigns the drawing blob and bumps `updatedAt`, mirroring `fill` and
+    /// `undoLastFill` — a boundary-assist/freehand stroke is exactly as
+    /// autosave-worthy as a tap-to-fill (DESIGN.md's "continuous autosave").
+    /// Passing `nil` is a legitimate assignment (clearing the drawing), not
+    /// a no-op guard, since unlike `fill` there's no idempotency concern to
+    /// protect the undo stack from.
+    public mutating func setDrawing(_ data: Data?) {
+        drawingData = data
         updatedAt = Date()
     }
 

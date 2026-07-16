@@ -181,6 +181,65 @@ public struct CBNLibrary: Sendable {
         return attempts.max { $0.updatedAt < $1.updatedAt }
     }
 
+    /// Every attempt for `itemID`, sorted NEWEST FIRST by `createdAt` — the
+    /// "attempts over months become a visible record" list (DESIGN.md).
+    /// Ties break on `updatedAt`, also newest first: `.iso8601` is
+    /// whole-second (see `makeEncoder`), so two attempts created in the same
+    /// wall-clock second are possible in principle, and `newAttempt(in:)`
+    /// is what actually guarantees a fresh attempt sorts first in practice
+    /// (see its doc comment) rather than this tie-break alone. A missing or
+    /// unreadable attempts directory yields an empty array rather than
+    /// throwing, matching `latestAttempt`'s philosophy; malformed individual
+    /// files are skipped, matching `items()`'s per-entry error handling —
+    /// only root-level I/O problems are real device problems worth a throw.
+    public func attempts(in itemID: String) throws -> [CBNAttempt] {
+        let directory = attemptsDirectory(itemID)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ) else { return [] }
+
+        let decoder = Self.makeDecoder()
+        let attempts: [CBNAttempt] = entries.compactMap { url in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? decoder.decode(CBNAttempt.self, from: data)
+        }
+        return attempts.sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+    }
+
+    /// Creates a brand-new, empty attempt and saves it — DESIGN.md's "color
+    /// it again," never "start over": prior attempts are ALWAYS kept, never
+    /// deleted or overwritten here (pruning old attempts is a parent-zone
+    /// concern, deferred to M4). If the new attempt would otherwise land in
+    /// the same encoded wall-clock second as the current latest attempt —
+    /// `.iso8601` is whole-second, see `makeEncoder` — its timestamp is
+    /// bumped strictly past it, the same synthetic-offset technique
+    /// `seedIfEmpty` already uses to keep its own ordering deterministic
+    /// rather than dependent on real clock resolution. That's what makes
+    /// `latestAttempt(in:)` unambiguously return this attempt immediately
+    /// afterward, and what makes it sort first in `attempts(in:)`.
+    @discardableResult
+    public func newAttempt(in itemID: String) throws -> CBNAttempt {
+        let previous = try latestAttempt(in: itemID)
+        // Floor to ENCODED resolution before comparing: `previous` came off
+        // disk with whole-second dates, while `Date()` carries a fraction
+        // that `.iso8601` silently truncates on save. Compared raw,
+        // 12:00:01.7 reads as "later" than a decoded 12:00:01, no bump
+        // happens, and encoding then lands both attempts tied at 12:00:01 —
+        // leaving `latestAttempt` to break the tie by directory iteration
+        // order. Flooring first makes the same-second case detectable, and
+        // makes the returned in-memory attempt identical to its on-disk form.
+        var timestamp = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+        if let previous, timestamp <= previous.updatedAt {
+            timestamp = previous.updatedAt.addingTimeInterval(1)
+        }
+        let attempt = CBNAttempt(createdAt: timestamp, updatedAt: timestamp)
+        try saveAttempt(attempt, in: itemID)
+        return attempt
+    }
+
     // MARK: - Seeding
 
     /// First-launch starter installation: if the library has no items yet,

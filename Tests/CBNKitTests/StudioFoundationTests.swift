@@ -200,6 +200,40 @@ private func twoRegionTemplate() -> CBNTemplate {
     #expect(attempt.updatedAt > afterFill)
 }
 
+@Test func attemptSetDrawingAssignsBlobAndBumpsUpdatedAt() {
+    var attempt = CBNAttempt()
+    let created = attempt.updatedAt
+    let blob = Data([0x01, 0x02, 0x03])
+
+    attempt.setDrawing(blob)
+    #expect(attempt.drawingData == blob)
+    #expect(attempt.updatedAt > created)
+
+    let afterFirstSet = attempt.updatedAt
+    attempt.setDrawing(nil)
+    #expect(attempt.drawingData == nil)
+    #expect(attempt.updatedAt > afterFirstSet)
+}
+
+/// A raw v1 attempt JSON — exactly what M2 wrote to real iPads, before
+/// `drawingData` existed: id/createdAt/updatedAt/filledRegionIDs only,
+/// ISO-8601 whole-second dates, sorted keys (matching `CBNLibrary`'s
+/// encoder). Those devices' on-disk attempts must keep decoding forever;
+/// this fixture is the regression guard for that promise.
+private let v1AttemptJSON = """
+{"createdAt":"2026-01-01T00:00:00Z","filledRegionIDs":["r0"],"id":"v1-attempt","updatedAt":"2026-01-01T00:00:05Z"}
+"""
+
+@Test func attemptDecodesV1JSONMissingDrawingDataAsNil() throws {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let attempt = try decoder.decode(CBNAttempt.self, from: Data(v1AttemptJSON.utf8))
+
+    #expect(attempt.id == "v1-attempt")
+    #expect(attempt.filledRegionIDs == ["r0"])
+    #expect(attempt.drawingData == nil)
+}
+
 // MARK: - CBNLibrary
 
 /// A fresh, uniquely-named temp directory per call — tests never share
@@ -277,6 +311,94 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     #expect(latest?.id == attempt.id)
     #expect(latest?.filledRegionIDs == attempt.filledRegionIDs)
     #expect(abs((latest?.updatedAt ?? .distantPast).timeIntervalSince(attempt.updatedAt)) < 1)
+}
+
+@Test func libraryDrawingDataRoundTripsThroughSaveAttemptAndLatestAttempt() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Drawn"))
+    var attempt = CBNAttempt()
+    attempt.setDrawing(Data([0xDE, 0xAD, 0xBE, 0xEF]))
+    try library.saveAttempt(attempt, in: item.id)
+
+    let latest = try library.latestAttempt(in: item.id)
+    #expect(latest?.drawingData == Data([0xDE, 0xAD, 0xBE, 0xEF]))
+}
+
+@Test func libraryAttemptsOrdersNewestFirstByCreatedAt() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // `add` already seeds one empty attempt; explicit, seconds-apart
+    // `createdAt`/`updatedAt` (rather than back-to-back `Date()` calls) is
+    // what makes the ordering deterministic despite `.iso8601`'s
+    // whole-second resolution — same rationale as `libraryItemsOrdersNewestFirst`.
+    let item = try library.add(sampleTemplate(title: "Replayed"))
+    let seeded = try library.latestAttempt(in: item.id)!
+
+    let now = Date()
+    let middle = CBNAttempt(id: "middle", createdAt: now, updatedAt: now)
+    let newest = CBNAttempt(
+        id: "newest",
+        createdAt: now.addingTimeInterval(10),
+        updatedAt: now.addingTimeInterval(10)
+    )
+    try library.saveAttempt(middle, in: item.id)
+    try library.saveAttempt(newest, in: item.id)
+
+    let attempts = try library.attempts(in: item.id)
+    #expect(attempts.map(\.id) == [newest.id, middle.id, seeded.id])
+}
+
+@Test func libraryNewAttemptBecomesLatestAndKeepsPriorAttemptIntact() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Again"))
+    var priorAttempt = try library.latestAttempt(in: item.id)!
+    priorAttempt.fill("r0")
+    try library.saveAttempt(priorAttempt, in: item.id)
+
+    let fresh = try library.newAttempt(in: item.id)
+
+    #expect(fresh.id != priorAttempt.id)
+    #expect(fresh.filledRegionIDs.isEmpty)
+
+    // `newAttempt` must win even when it lands in the same encoded
+    // wall-clock second as the prior attempt's `updatedAt` — the whole
+    // reason it bumps its own timestamp strictly past the prior one.
+    let latest = try library.latestAttempt(in: item.id)
+    #expect(latest?.id == fresh.id)
+
+    // "Color it again" never deletes or overwrites — the prior attempt and
+    // its fills must still be sitting on disk afterward.
+    let all = try library.attempts(in: item.id)
+    #expect(all.count == 2)
+    let stillThere = all.first { $0.id == priorAttempt.id }
+    #expect(stillThere?.filledRegionIDs == ["r0"])
+}
+
+/// Forces the same-second collision rather than hoping to dodge it: several
+/// `newAttempt` calls inside one wall-clock second must still produce
+/// strictly increasing on-disk timestamps (via the synthetic +1s bump), so
+/// "latest" never degrades to directory iteration order.
+@Test func libraryRapidNewAttemptsStayStrictlyOrderedOnDisk() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Rapid"))
+    let second = try library.newAttempt(in: item.id)
+    let third = try library.newAttempt(in: item.id)
+    #expect(second.createdAt < third.createdAt)
+
+    // Decoded-from-disk order must match, and the very last creation must
+    // be the unambiguous latest.
+    let all = try library.attempts(in: item.id)
+    #expect(all.count == 3)
+    #expect(all.map(\.id).first == third.id)
+    #expect(zip(all, all.dropFirst()).allSatisfy { $0.createdAt > $1.createdAt })
+    #expect(try library.latestAttempt(in: item.id)?.id == third.id)
 }
 
 @Test func librarySeedIfEmptySeedsOnceThenBecomesANoOp() throws {
