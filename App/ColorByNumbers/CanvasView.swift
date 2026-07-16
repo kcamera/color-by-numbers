@@ -521,8 +521,12 @@ private struct ModeSwitch: View {
 /// already, so this just states that truth to the Swift 6 checker.
 @MainActor
 private enum DrawingFeel {
-    static let inkType: PKInkingTool.InkType = .marker
-    static let width: CGFloat = 12
+    /// `.monoline` — a round, constant-width line regardless of speed,
+    /// pressure, or direction. Kevin's M3 gate feedback: `.marker` renders
+    /// as a chisel tip whose width varies with stroke direction, which read
+    /// as "calligraphy" rather than a kid's crayon line.
+    static let inkType: PKInkingTool.InkType = .monoline
+    static let width: CGFloat = 10
 }
 
 /// PencilKit's real canvas, wrapped for SwiftUI — the freehand/boundary-
