@@ -12,6 +12,11 @@ final class CanvasModel {
     let library: CBNLibrary
     let item: CBNLibraryItem
     private(set) var attempt: CBNAttempt
+    /// The crayon the child currently holds. Selection is pure UI state, not
+    /// attempt state (M3 active-color model) — it is never undoable and
+    /// never persisted; a fresh session always starts on the first palette
+    /// entry, same as picking up the first crayon in a new box.
+    var selectedColorNumber: Int
 
     init(library: CBNLibrary, item: CBNLibraryItem) {
         self.library = library
@@ -26,18 +31,34 @@ final class CanvasModel {
         } else {
             attempt = CBNAttempt()
         }
+        // The importer guarantees a non-empty palette; falling back to 0
+        // rather than crashing keeps a malformed template from taking down
+        // the whole screen (same defensiveness as the attempt load above).
+        selectedColorNumber = item.template.palette.first?.number ?? 0
     }
 
     var template: CBNTemplate { item.template }
 
     /// A tap in TEMPLATE coordinate space (already mapped back through the
     /// view's fit transform). Fills the topmost region under the point if
-    /// it exists and isn't already filled; otherwise a silent no-op — no
-    /// feedback on a miss or a re-tap, per the calm contract (DESIGN.md).
+    /// it exists, matches the held crayon, and isn't already filled;
+    /// otherwise a silent no-op — a miss, a re-tap, and a wrong-color tap
+    /// are all the same "nothing happened" per the calm contract (DESIGN.md
+    /// — no error feedback, ever).
     func tap(at point: CBNPoint) {
-        guard let region = template.region(at: point), !attempt.isFilled(region.id) else { return }
+        guard let region = template.region(at: point),
+              region.colorNumber == selectedColorNumber,
+              !attempt.isFilled(region.id)
+        else { return }
         attempt.fill(region.id)
         save()
+    }
+
+    /// Swapping crayons never touches the attempt and is never undoable —
+    /// there is nothing here for the calm contract's undo/safety story to
+    /// guard (DESIGN.md).
+    func selectColor(_ number: Int) {
+        selectedColorNumber = number
     }
 
     /// Generous, always-available undo (DESIGN.md) — never a confirmation.
@@ -153,6 +174,26 @@ struct CanvasView: View {
                     Spacer()
                     if isComplete {
                         DoneBadge()
+                    }
+                }
+                Spacer()
+            }
+            .padding(24)
+
+            // Vertically centered so it can never collide with the
+            // top-trailing DoneBadge or bottom-trailing UndoControl, which
+            // both hug their corners — the two Spacers keep equal clearance
+            // on either side regardless of screen height (M3 spec: inset
+            // from those corners, not stacked alongside them).
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    PaletteRail(
+                        palette: template.palette,
+                        selectedColorNumber: model.selectedColorNumber
+                    ) { number in
+                        model.selectColor(number)
                     }
                 }
                 Spacer()
@@ -307,6 +348,81 @@ private struct UndoControl: View {
         // A symbol-only button needs a spoken name (VoiceOver); it also
         // serves as the UI-test driver's handle.
         .accessibilityLabel("Undo")
+    }
+}
+
+/// The numbered crayon tray: one swatch per palette entry, in palette
+/// order, along the trailing edge. Color-BY-NUMBER means the number
+/// annotation is the point (DESIGN.md — the child matches crayon number to
+/// region numbers), so every swatch shows both its color and its number,
+/// never color alone. Our templates top out at 6 colors, so this is a
+/// plain stack — no scrolling to build for a case that doesn't exist yet.
+private struct PaletteRail: View {
+    let palette: [CBNPaletteEntry]
+    let selectedColorNumber: Int
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ForEach(palette, id: \.number) { entry in
+                PaletteSwatch(
+                    entry: entry,
+                    isSelected: entry.number == selectedColorNumber,
+                    action: { onSelect(entry.number) }
+                )
+            }
+        }
+    }
+}
+
+/// One crayon: a palette-colored disc in the same white-ish capsule
+/// material as Back/Undo, ringed when it's the held color. ≥64pt hit
+/// target for small fingers (DESIGN.md), same floor as UndoControl.
+private struct PaletteSwatch: View {
+    let entry: CBNPaletteEntry
+    let isSelected: Bool
+    let action: () -> Void
+
+    private var swatchColor: Color {
+        guard let rgb = entry.rgb else { return .white }
+        return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
+    }
+
+    /// The number must stay legible on every palette color, from pale
+    /// Sailcloth to dark Deep Sea — a fixed ink tone would vanish against
+    /// half the palette, so pick light or dark text by swatch luminance.
+    private var numberColor: Color {
+        guard let rgb = entry.rgb else { return DeskStyle.inkColor }
+        let luminance = 0.299 * rgb.red + 0.587 * rgb.green + 0.114 * rgb.blue
+        return luminance > 0.6 ? DeskStyle.inkColor : .white
+    }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(Color.white.opacity(0.7))
+                Circle()
+                    .fill(swatchColor)
+                    .padding(6)
+                Text("\(entry.number)")
+                    .font(.system(.callout, design: .rounded, weight: .bold))
+                    .foregroundStyle(numberColor)
+            }
+            .overlay(
+                // A quiet, calm selected state — a stronger ring, not a
+                // color change or animation (DESIGN.md: no reward
+                // circuitry). Function-first; the M6 polish pass owns the
+                // final look.
+                Circle()
+                    .strokeBorder(DeskStyle.inkColor, lineWidth: isSelected ? 3 : 0)
+            )
+            .frame(width: 64, height: 64)
+        }
+        .buttonStyle(.plain)
+        // Spoken name for VoiceOver; also the UI-test driver's handle for
+        // "hold crayon N", same dual purpose as Undo's label.
+        .accessibilityLabel("Color \(entry.number)")
     }
 }
 

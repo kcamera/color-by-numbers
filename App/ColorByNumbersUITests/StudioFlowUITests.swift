@@ -30,13 +30,18 @@ final class StudioFlowUITests: XCTestCase {
         let back = app.staticTexts["Studio"]
         XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not open")
 
-        // Three taps spread across the artwork: sky (top middle), sea
-        // (bottom middle), and a left-side point. Misses are silent no-ops
-        // by design, so the screenshot is what proves fills happened.
+        // M3 active-color gate: a tap only fills the region that matches
+        // the held crayon (little-sailboat.json's colorNumber per region),
+        // so each artwork tap below is preceded by selecting that region's
+        // crayon. Two taps spread across the artwork: sky (top middle,
+        // color 1) and sea (bottom middle, color 3). Misses/wrong-crayon
+        // taps are silent no-ops by design, so the screenshot is what
+        // proves fills happened.
         let window = app.windows.firstMatch
+        app.buttons["Color 1"].tap()
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        app.buttons["Color 3"].tap()
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
-        window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
         attachScreenshot(of: app, named: "2-canvas-after-taps")
 
         // Continuous autosave contract: kill the process outright, relaunch,
@@ -54,9 +59,8 @@ final class StudioFlowUITests: XCTestCase {
 
         // Studio-honesty check (M2 gate feedback): popping back to the
         // grid must show the card's CURRENT coloring state, not a pristine
-        // outline — undo removed the sea and side-point fills but left the
-        // sky filled, so the sailboat's thumbnail should visibly show a
-        // colored sky.
+        // outline — undo removed the sea fill but left the sky filled, so
+        // the sailboat's thumbnail should visibly show a colored sky.
         app.staticTexts["Studio"].tap()
         XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio grid did not reappear")
         attachScreenshot(of: app, named: "5-studio-after-coloring")
@@ -83,10 +87,20 @@ final class StudioFlowUITests: XCTestCase {
         let done = app.staticTexts["Done"]
         XCTAssertFalse(done.exists, "Done badge visible before any coloring (needs a fresh install)")
 
+        // M3 active-color gate: spray the same 5×3 grid once per palette
+        // color in banner.json (1...4), holding that crayon selected. A tap
+        // only fills a region matching the held crayon, so re-tapping the
+        // whole grid for every color is still safe — a re-tap on an
+        // already-filled region and a tap with the wrong crayon are both
+        // silent no-ops by design — and it guarantees every region meets
+        // its matching color regardless of exactly where it sits on screen.
         let window = app.windows.firstMatch
-        for dy in [0.25, 0.5, 0.75] {
-            for dx in [0.2, 0.35, 0.5, 0.65, 0.8] {
-                window.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
+        for colorNumber in 1...4 {
+            app.buttons["Color \(colorNumber)"].tap()
+            for dy in [0.25, 0.5, 0.75] {
+                for dx in [0.2, 0.35, 0.5, 0.65, 0.8] {
+                    window.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
+                }
             }
         }
         XCTAssertTrue(done.waitForExistence(timeout: 5), "Done badge never appeared after filling every region")
