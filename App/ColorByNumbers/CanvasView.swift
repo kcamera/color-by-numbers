@@ -1,5 +1,39 @@
 import CBNKit
+import PencilKit
 import SwiftUI
+
+/// Which coloring tool is live (DESIGN.md's skill ladder). Two cases today;
+/// boundary-assist (real drawing, strokes clipped to the active region)
+/// lands as a third, MIDDLE case once the clipping engine exists (a later
+/// milestone). `CaseIterable` + `Hashable` so every switch/`ForEach` over
+/// `CanvasMode` in this file (`ModeSwitch` below, `DrawingCanvas`'s active
+/// state) picks up a new case by construction — adding boundary-assist
+/// should mean one new case plus whatever the compiler then points at, not
+/// a UI rewrite.
+enum CanvasMode: CaseIterable, Hashable {
+    case tapFill
+    case freehand
+}
+
+private extension CanvasMode {
+    var systemImageName: String {
+        switch self {
+        case .tapFill: "hand.point.up.left"
+        // Placeholder glyph (M3 spec): the real clipped/escaping-squiggle
+        // icon is M6 polish.
+        case .freehand: "scribble"
+        }
+    }
+
+    /// Doubles as the UI-test driver's handle, same dual purpose as
+    /// "Undo" and "Color N" elsewhere in this file.
+    var accessibilityLabel: String {
+        switch self {
+        case .tapFill: "Tap mode"
+        case .freehand: "Draw mode"
+        }
+    }
+}
 
 /// Owns one coloring session: the immutable template plus its mutable
 /// attempt. Every mutation saves through `CBNLibrary` immediately —
@@ -17,6 +51,16 @@ final class CanvasModel {
     /// never persisted; a fresh session always starts on the first palette
     /// entry, same as picking up the first crayon in a new box.
     var selectedColorNumber: Int
+    /// Which coloring tool is live. Session state, like `selectedColorNumber`
+    /// above — never undoable, never persisted; a fresh session always
+    /// starts on tap-to-fill, the skill ladder's floor (DESIGN.md).
+    var mode: CanvasMode = .tapFill
+    /// The live PencilKit drawing, mirrored from `attempt.drawingData` at
+    /// load and kept in lockstep with it by `strokeChanged`/`undo`
+    /// afterward. CBNKit stores the drawing as opaque `Data` and must never
+    /// import PencilKit (CBNAttempt.swift) — this app-side `PKDrawing` is
+    /// the only place those bytes get interpreted as strokes.
+    var drawing: PKDrawing
 
     init(library: CBNLibrary, item: CBNLibraryItem) {
         self.library = library
@@ -26,15 +70,25 @@ final class CanvasModel {
         // read failure here is defensive only: fall back to a fresh attempt
         // so a library hiccup still lets the child color, rather than
         // failing the whole screen.
-        if let loaded = try? library.latestAttempt(in: item.id) {
-            attempt = loaded
-        } else {
-            attempt = CBNAttempt()
-        }
+        //
+        // Held in a local rather than read back off `self.attempt` below:
+        // Swift's two-phase init won't allow reading ANY property off
+        // `self` until every stored property has a value, and `drawing`
+        // (below) still needs one.
+        let loadedAttempt = (try? library.latestAttempt(in: item.id)) ?? CBNAttempt()
+        attempt = loadedAttempt
         // The importer guarantees a non-empty palette; falling back to 0
         // rather than crashing keeps a malformed template from taking down
         // the whole screen (same defensiveness as the attempt load above).
         selectedColorNumber = item.template.palette.first?.number ?? 0
+        // Restore whatever was drawn last session. A decode failure (or no
+        // drawing at all) falls back to a blank canvas rather than failing
+        // the screen — same defensiveness as the attempt load above.
+        if let data = loadedAttempt.drawingData, let restored = try? PKDrawing(data: data) {
+            drawing = restored
+        } else {
+            drawing = PKDrawing()
+        }
     }
 
     var template: CBNTemplate { item.template }
@@ -61,13 +115,48 @@ final class CanvasModel {
         selectedColorNumber = number
     }
 
-    /// Generous, always-available undo (DESIGN.md) — never a confirmation.
-    /// A no-op at zero fills, so the button can stay tappable rather than
-    /// disabled.
-    func undo() {
-        guard !attempt.filledRegionIDs.isEmpty else { return }
-        attempt.undoLastFill()
+    /// Switching tools, like swapping crayons, never touches the attempt
+    /// and is never undoable.
+    func setMode(_ mode: CanvasMode) {
+        self.mode = mode
+    }
+
+    /// `DrawingCanvas`'s autosave path: called once per completed stroke
+    /// with its freshly re-serialized drawing (never for programmatic
+    /// loads — the canvas wrapper suppresses those before this is ever
+    /// reached). Mirrors `tap`'s save-through contract (DESIGN.md's
+    /// continuous autosave). A decode failure leaves `drawing` as it was —
+    /// the attempt still records the stroke, so nothing is lost, only the
+    /// in-memory mirror stays one stroke behind until the next successful
+    /// round trip.
+    func strokeChanged(_ data: Data) {
+        if let redecoded = try? PKDrawing(data: data) {
+            drawing = redecoded
+        }
+        attempt.recordStroke(data)
         save()
+    }
+
+    /// Generous, always-available undo (DESIGN.md), unified across both
+    /// action kinds (M3): consults which kind of thing happened last and
+    /// takes back exactly that, rather than always assuming a fill. A
+    /// no-op when nothing has ever happened in this attempt, so the button
+    /// can stay tappable rather than disabled.
+    func undo() {
+        switch attempt.effectiveActionLog.last {
+        case .fill:
+            attempt.undoLastFill()
+            save()
+        case .stroke:
+            var strokes = drawing.strokes
+            strokes.removeLast()
+            let updated = PKDrawing(strokes: strokes)
+            drawing = updated
+            attempt.undoLastStroke(updatedDrawing: strokes.isEmpty ? nil : updated.dataRepresentation())
+            save()
+        case nil:
+            break
+        }
     }
 
     private func save() {
@@ -130,7 +219,10 @@ struct CanvasView: View {
         // than to Canvas's separate rendering closure.
         let template = model.template
         let filledIDs = Set(model.attempt.filledRegionIDs)
-        let hasFills = !model.attempt.filledRegionIDs.isEmpty
+        // M3: the log, not the fill count, is what Undo dims on — an
+        // attempt that's all strokes and no fills still has something to
+        // take back.
+        let canUndo = !model.attempt.effectiveActionLog.isEmpty
         let isComplete = model.attempt.isComplete(for: template)
 
         ZStack {
@@ -156,6 +248,18 @@ struct CanvasView: View {
 
                     Canvas { context, _ in
                         draw(template: template, filledIDs: filledIDs, fit: fit, in: context)
+                    }
+
+                    // Above the fills, below every control layer added
+                    // further down this ZStack (M3 spec). Sized to exactly
+                    // this same page rect so it lines up pixel-for-pixel
+                    // with what `Canvas` just drew.
+                    DrawingCanvas(
+                        drawing: model.drawing,
+                        isActive: model.mode == .freehand,
+                        inkColor: paletteColor(for: model.selectedColorNumber, in: template)
+                    ) { newDrawing in
+                        model.strokeChanged(newDrawing.dataRepresentation())
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
@@ -204,13 +308,38 @@ struct CanvasView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    UndoControl(hasFills: hasFills) { model.undo() }
+                    UndoControl(canUndo: canUndo) { model.undo() }
+                }
+            }
+            .padding(24)
+
+            // Bottom-LEADING: balances UndoControl at bottom-trailing,
+            // stays clear of the trailing PaletteRail and the top edge
+            // where the Pencil docks (DESIGN.md's aesthetic north star).
+            VStack {
+                Spacer()
+                HStack {
+                    ModeSwitch(mode: model.mode) { model.setMode($0) }
+                    Spacer()
                 }
             }
             .padding(24)
         }
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
+    }
+
+    /// The held crayon's color, for `DrawingCanvas`'s ink — ink follows the
+    /// held crayon (M3 spec), same lookup `PaletteSwatch.swatchColor` and
+    /// `draw`'s `paletteByNumber` use, just for one entry instead of the
+    /// whole palette. Falls back to ink-gray rather than crashing if the
+    /// selected number somehow isn't in the palette (same defensiveness as
+    /// `CanvasModel.init`'s palette fallback).
+    private func paletteColor(for number: Int, in template: CBNTemplate) -> Color {
+        guard let entry = template.palette.first(where: { $0.number == number }),
+              let rgb = entry.rgb
+        else { return DeskStyle.inkColor }
+        return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 
     /// Draws every region in stored painter's order: filled regions get
@@ -327,12 +456,14 @@ private struct DoneBadge: View {
 }
 
 /// The undo button: always present (DESIGN.md — "stable furniture, no
-/// popping in/out"). At zero fills it dims rather than disappearing or
-/// disabling; `CanvasModel.undo()` is already a safe no-op with nothing to
-/// undo, so there's no need to block the tap. ≥64pt hit target for small
-/// fingers.
+/// popping in/out"). At an empty action log it dims rather than
+/// disappearing or disabling; `CanvasModel.undo()` is already a safe no-op
+/// with nothing to undo, so there's no need to block the tap. Dims on the
+/// LOG being empty, not on fill count (M3): an attempt that's all strokes
+/// and no fills still has something to take back. ≥64pt hit target for
+/// small fingers.
 private struct UndoControl: View {
-    let hasFills: Bool
+    let canUndo: Bool
     let action: () -> Void
 
     var body: some View {
@@ -344,10 +475,143 @@ private struct UndoControl: View {
                 .background(Circle().fill(Color.white.opacity(0.7)))
         }
         .buttonStyle(.plain)
-        .opacity(hasFills ? 1 : 0.35)
+        .opacity(canUndo ? 1 : 0.35)
         // A symbol-only button needs a spoken name (VoiceOver); it also
         // serves as the UI-test driver's handle.
         .accessibilityLabel("Undo")
+    }
+}
+
+/// The skill-ladder mode switch (DESIGN.md): a quiet two-position control in
+/// the same white-capsule material as Back/Done, one button per
+/// `CanvasMode` case so a third (boundary-assist) slots in without a layout
+/// change. Selected state mirrors `PaletteSwatch`'s ring — a stronger
+/// stroke, not a color change (no reward circuitry).
+private struct ModeSwitch: View {
+    let mode: CanvasMode
+    let onSelect: (CanvasMode) -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(CanvasMode.allCases, id: \.self) { candidate in
+                Button(action: { onSelect(candidate) }) {
+                    Image(systemName: candidate.systemImageName)
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(DeskStyle.inkColor)
+                        .frame(width: 64, height: 64)
+                        .overlay(
+                            Circle().strokeBorder(DeskStyle.inkColor, lineWidth: candidate == mode ? 3 : 0)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(candidate.accessibilityLabel)
+            }
+        }
+        .padding(4)
+        .background(Capsule(style: .continuous).fill(Color.white.opacity(0.7)))
+    }
+}
+
+/// Stroke-feel tuning constants for freehand/boundary-assist drawing,
+/// deliberately isolated here — `[design-sensitive]` per docs/PLAN.md's M3
+/// gate. First guesses, not a final answer: marker-style ink at a medium
+/// width, meant to be tuned in review without hunting through view code.
+/// `@MainActor`: `PKInkingTool.InkType` isn't `Sendable`, and every use site
+/// (`DrawingCanvas`'s UIViewRepresentable methods) is main-actor-isolated
+/// already, so this just states that truth to the Swift 6 checker.
+@MainActor
+private enum DrawingFeel {
+    static let inkType: PKInkingTool.InkType = .marker
+    static let width: CGFloat = 12
+}
+
+/// PencilKit's real canvas, wrapped for SwiftUI — the freehand/boundary-
+/// assist drawing surface (DESIGN.md's skill ladder). `drawing` is the
+/// single source of truth (`CanvasModel.drawing`); this type only ever
+/// mirrors it into the live `PKCanvasView`, never the other way except
+/// through `onStrokeAdded`.
+private struct DrawingCanvas: UIViewRepresentable {
+    let drawing: PKDrawing
+    /// Tap-to-fill mode must not have this layer intercept touches at all
+    /// (M3 spec) — the tap gesture on the `Canvas` beneath is naturally
+    /// occluded once this becomes interactive.
+    let isActive: Bool
+    let inkColor: Color
+    let onStrokeAdded: (PKDrawing) -> Void
+
+    func makeUIView(context: Context) -> PKCanvasView {
+        let view = PKCanvasView()
+        // Finger/Pencil parity (DESIGN.md) — no separate finger-drawing
+        // toggle anywhere in this app.
+        view.drawingPolicy = .anyInput
+        view.isOpaque = false
+        view.backgroundColor = .clear
+        // No ruler, no stock tool picker — the only tool offered is the
+        // held crayon, applied below.
+        view.isRulerActive = false
+        view.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: DrawingFeel.width)
+        view.isUserInteractionEnabled = isActive
+        view.delegate = context.coordinator
+        context.coordinator.installProgrammatically(drawing, into: view)
+        return view
+    }
+
+    func updateUIView(_ uiView: PKCanvasView, context: Context) {
+        uiView.isUserInteractionEnabled = isActive
+        uiView.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: DrawingFeel.width)
+        context.coordinator.syncIfNeeded(drawing, into: uiView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onStrokeAdded: onStrokeAdded)
+    }
+
+    /// `PKCanvasViewDelegate` bridge. Its one callback,
+    /// `canvasViewDrawingDidChange`, fires both for the child's own strokes
+    /// AND for programmatic drawing assignment (restore on open, undo) —
+    /// the delegate-callback pitfall the M3 spec calls out explicitly. Two
+    /// guards keep programmatic loads from appending phantom log entries:
+    /// `isInstallingProgrammatically` (set only around `installProgrammatically`'s
+    /// own assignment) and a raw stroke-COUNT comparison (only a genuine
+    /// increase — a stroke actually added — is forwarded; a decrease or a
+    /// same-count mutation never is).
+    final class Coordinator: NSObject, PKCanvasViewDelegate {
+        private let onStrokeAdded: (PKDrawing) -> Void
+        private var isInstallingProgrammatically = false
+        private var lastKnownStrokeCount = 0
+        /// `PKDrawing` is a value type (`Equatable`, not a class), so this
+        /// is a content comparison, not identity — but the point is the
+        /// same: skip reinstalling on every unrelated SwiftUI re-render (a
+        /// color swap, a mode switch), which would otherwise reset the live
+        /// view mid-gesture for no reason. Only a genuinely different
+        /// drawing (restore, undo, or this coordinator's own round-tripped
+        /// copy after a stroke) should trigger it.
+        private var lastInstalledDrawing: PKDrawing?
+
+        init(onStrokeAdded: @escaping (PKDrawing) -> Void) {
+            self.onStrokeAdded = onStrokeAdded
+        }
+
+        func installProgrammatically(_ drawing: PKDrawing, into view: PKCanvasView) {
+            isInstallingProgrammatically = true
+            view.drawing = drawing
+            isInstallingProgrammatically = false
+            lastKnownStrokeCount = drawing.strokes.count
+            lastInstalledDrawing = drawing
+        }
+
+        func syncIfNeeded(_ drawing: PKDrawing, into view: PKCanvasView) {
+            guard drawing != lastInstalledDrawing else { return }
+            installProgrammatically(drawing, into: view)
+        }
+
+        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            guard !isInstallingProgrammatically else { return }
+            let count = canvasView.drawing.strokes.count
+            defer { lastKnownStrokeCount = count }
+            guard count > lastKnownStrokeCount else { return }
+            onStrokeAdded(canvasView.drawing)
+        }
     }
 }
 

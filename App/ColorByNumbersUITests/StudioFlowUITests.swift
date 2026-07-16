@@ -119,6 +119,70 @@ final class StudioFlowUITests: XCTestCase {
         attachScreenshot(of: app, named: "done-2-after-undo")
     }
 
+    /// M3's headline flow: one Undo button taking back "the last thing that
+    /// happened" across BOTH action kinds. Fills a region in tap mode,
+    /// switches to freehand, drags a stroke, relaunches (continuous
+    /// autosave must cover both), then undoes twice — stroke first, fill
+    /// second, matching `effectiveActionLog`'s interleaved order. The
+    /// on-disk attempt JSON's `actionLog` at each checkpoint is inspected
+    /// externally via `simctl get_app_container` (see .claude/skills/verify);
+    /// the assertions here are the same kind of existence checks the other
+    /// two tests use, with screenshots as the visual evidence.
+    @MainActor
+    func testFreehandStrokePersistsAndUndoInterleaves() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        let card = app.staticTexts["Little Sailboat"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio card never appeared")
+        card.tap()
+
+        let back = app.staticTexts["Studio"]
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not open")
+
+        // Tap mode first: fill the sky (little-sailboat.json's "sky" region
+        // is colorNumber 1), same crayon/coordinate as
+        // testTapToFillPersistsAcrossRelaunch — one known-good fill before
+        // ever touching the mode switch.
+        let window = app.windows.firstMatch
+        app.buttons["Color 1"].tap()
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        attachScreenshot(of: app, named: "freehand-1-after-fill")
+
+        // Switch to Draw mode and drag a stroke across the artwork — a
+        // press-and-drag on an XCUICoordinate is XCUITest's way of driving
+        // a continuous touch, which PencilKit's `.anyInput` drawing policy
+        // (finger/Pencil parity, DESIGN.md) accepts same as a real finger.
+        app.buttons["Draw mode"].tap()
+        let strokeStart = window.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.6))
+        let strokeEnd = window.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6))
+        strokeStart.press(forDuration: 0.1, thenDragTo: strokeEnd)
+        attachScreenshot(of: app, named: "freehand-2-after-stroke")
+
+        // Continuous autosave (DESIGN.md) must cover the stroke exactly
+        // like it already covers fills: kill outright, relaunch, reopen —
+        // both must still be there.
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio missing after relaunch")
+        card.tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not reopen")
+        attachScreenshot(of: app, named: "freehand-3-after-relaunch")
+
+        // Undo unification (M3): the on-disk log is ["fill", "stroke"], so
+        // one tap takes back the stroke (log -> ["fill"], drawing empties)...
+        app.buttons["Undo"].tap()
+        attachScreenshot(of: app, named: "freehand-4-after-first-undo")
+
+        // ...and a second tap takes back the fill (log -> [], attempt
+        // pristine again) — exactly the interleaved order the action log
+        // exists to preserve.
+        app.buttons["Undo"].tap()
+        attachScreenshot(of: app, named: "freehand-5-after-second-undo")
+    }
+
     @MainActor
     private func attachScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
