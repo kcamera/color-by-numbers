@@ -24,6 +24,12 @@ struct StudioView: View {
     /// misses and gets regenerated, so returning from the canvas refreshes
     /// exactly the cards that changed and nothing else.
     @State private var thumbnails: [ThumbnailKey: Image] = [:]
+    /// Whether the Workshop door's full-screen cover is up. Its content is
+    /// a single `WorkshopDoor` instance (below) that internally swaps Gate
+    /// for Workshop on a correct code — a fresh instance every presentation
+    /// means the Gate always starts locked again, never remembering a
+    /// previous session's unlock.
+    @State private var showingWorkshop = false
 
     /// Identifies "this item's thumbnail as of this attempt state." Two
     /// fields, not one, because the template alone never changes (immutable
@@ -62,6 +68,19 @@ struct StudioView: View {
                     }
                     .padding(32)
                 }
+
+                // The Workshop door (DESIGN.md's agency model: ONE parental
+                // gate). Top-trailing, same white "material" as every other
+                // quiet control here, but no color and no badge — it must
+                // read as furniture, not a toy inviting a tap.
+                VStack {
+                    HStack {
+                        Spacer()
+                        WorkshopDoorControl { showingWorkshop = true }
+                    }
+                    Spacer()
+                }
+                .padding(24)
             }
             .toolbar(.hidden, for: .navigationBar)
             // `.onAppear` rather than `.task`, and on the stack's root
@@ -73,6 +92,13 @@ struct StudioView: View {
             // exact "re-check on return" moment this reload exists for.
             .onAppear {
                 loadItems()
+            }
+            // Full-screen rather than a sheet: the app is landscape-only
+            // (Fixed constraints, DESIGN.md), so there's no compact-width
+            // sheet presentation to prefer, and the Workshop is a wholly
+            // separate "room" from the Studio, not a peek-and-pop panel.
+            .fullScreenCover(isPresented: $showingWorkshop) {
+                WorkshopDoor()
             }
         }
     }
@@ -157,6 +183,49 @@ struct StudioView: View {
             strokesImage.draw(in: CGRect(origin: .zero, size: pixelSize))
         }
         thumbnails[key] = Image(uiImage: composited)
+    }
+}
+
+/// The Workshop door itself: a quiet, colorless control that reads as
+/// furniture rather than a toy — `wrench.and.screwdriver` is a placeholder
+/// (M6 polish owns the real icon). Same white "material" fill as every
+/// other quiet control in the app (`BackControl`, `UndoControl`, etc., in
+/// CanvasView.swift).
+private struct WorkshopDoorControl: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "wrench.and.screwdriver")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(DeskStyle.inkColor)
+                .frame(width: 56, height: 56)
+                .background(Circle().fill(Color.white.opacity(0.7)))
+        }
+        .buttonStyle(.plain)
+        // Spoken name for VoiceOver; also the UI-test driver's handle.
+        .accessibilityLabel("Workshop")
+    }
+}
+
+/// Bridges the door's two stops — Gate, then Workshop — inside ONE
+/// full-screen cover. Unlocking swaps content in place (a local `@State`
+/// flip) rather than dismissing the Gate's cover to present a second one:
+/// back-to-back full-screen covers from the same presenter fight each
+/// other on iOS, and this sidesteps that entirely. Because a fresh instance
+/// of this view is created every time `showingWorkshop` above flips true,
+/// `unlocked` always starts `false` — dismissing the Gate without the code,
+/// or leaving the Workshop, both return here to a locked door next time
+/// (DESIGN.md: ONE parental gate, no way to linger past it unlocked).
+private struct WorkshopDoor: View {
+    @State private var unlocked = false
+
+    var body: some View {
+        if unlocked {
+            WorkshopView()
+        } else {
+            WorkshopGateView(onUnlocked: { unlocked = true })
+        }
     }
 }
 

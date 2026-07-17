@@ -352,6 +352,96 @@ final class StudioFlowUITests: XCTestCase {
         attachScreenshot(of: app, named: "cover-3-after-relaunch")
     }
 
+    /// M4's headline flow: the Workshop door, the parental gate, and the one
+    /// real Workshop feature shipped this milestone (drawing width). The
+    /// gate deals three random digits as lowercase words (WorkshopGateView's
+    /// "Gate words" element exposes them as its label) — this test reads
+    /// them, types a deliberately WRONG sequence, and checks the calm
+    /// silent reset: still at the gate, but with NEW words dealt (never an
+    /// error message, per DESIGN.md's no-error-feedback contract). It then
+    /// reads the re-dealt words and types them correctly, landing in the
+    /// Workshop (the "Drawing" section header is the arrival signal). A
+    /// width choice there must survive a full relaunch — through the gate
+    /// again — the same continuous-persistence bar every other Canvas
+    /// setting in this suite clears.
+    @MainActor
+    func testWorkshopGateAndWidthSetting() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        let wordToDigit: [String: Int] = [
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9,
+        ]
+        func digits(from wordsText: String) -> [Int] {
+            wordsText.split(separator: " ").compactMap { wordToDigit[String($0)] }
+        }
+
+        let doorButton = app.buttons["Workshop"]
+        XCTAssertTrue(doorButton.waitForExistence(timeout: 10), "Workshop door never appeared")
+        doorButton.tap()
+
+        let gateWords = app.staticTexts["Gate words"]
+        XCTAssertTrue(gateWords.waitForExistence(timeout: 10), "Gate did not appear")
+        attachScreenshot(of: app, named: "workshop-1-gate")
+
+        let firstDealt = digits(from: gateWords.label)
+        XCTAssertEqual(firstDealt.count, 3, "Gate words did not parse to three digits: \(gateWords.label)")
+
+        // A deliberately wrong sequence: the dealt first digit shifted by
+        // one (wrapped back to 1 past 9), then two arbitrary digits — the
+        // gate only judges once all three taps land, so a mismatch anywhere
+        // in the sequence is enough.
+        let wrongFirst = firstDealt[0] == 9 ? 1 : firstDealt[0] + 1
+        app.buttons["\(wrongFirst)"].tap()
+        app.buttons["1"].tap()
+        app.buttons["1"].tap()
+
+        // Still at the gate — a miss never unlocks — but with NEW words
+        // dealt: the calm silent reset, no error message anywhere.
+        XCTAssertTrue(gateWords.waitForExistence(timeout: 5), "Gate should still be showing after a wrong entry")
+        let secondDealt = digits(from: gateWords.label)
+        XCTAssertEqual(secondDealt.count, 3, "Re-dealt gate words did not parse to three digits: \(gateWords.label)")
+        XCTAssertNotEqual(firstDealt, secondDealt, "Gate words did not change after a wrong entry")
+        attachScreenshot(of: app, named: "workshop-2-after-wrong-entry")
+
+        // The re-dealt words, entered correctly this time, unlock the
+        // Workshop.
+        for digit in secondDealt {
+            app.buttons["\(digit)"].tap()
+        }
+        let drawingHeader = app.staticTexts["Drawing"]
+        XCTAssertTrue(drawingHeader.waitForExistence(timeout: 10), "Workshop did not appear after correct entry")
+        attachScreenshot(of: app, named: "workshop-3-unlocked")
+
+        // Pick a freehand width and let it persist.
+        let widthFour = app.buttons["Freehand width 4"]
+        XCTAssertTrue(widthFour.waitForExistence(timeout: 5), "Freehand width 4 control missing")
+        widthFour.tap()
+        attachScreenshot(of: app, named: "workshop-4-width-selected")
+
+        // Continuous persistence, same bar as every other Canvas setting in
+        // this suite: kill outright, relaunch, walk back through the gate,
+        // and the width-4 choice must still be selected.
+        app.terminate()
+        app.launch()
+
+        XCTAssertTrue(doorButton.waitForExistence(timeout: 10), "Workshop door missing after relaunch")
+        doorButton.tap()
+        XCTAssertTrue(gateWords.waitForExistence(timeout: 10), "Gate did not reappear after relaunch")
+        let thirdDealt = digits(from: gateWords.label)
+        XCTAssertEqual(thirdDealt.count, 3, "Gate words did not parse to three digits on relaunch: \(gateWords.label)")
+        for digit in thirdDealt {
+            app.buttons["\(digit)"].tap()
+        }
+        XCTAssertTrue(drawingHeader.waitForExistence(timeout: 10), "Workshop did not reappear after relaunch")
+
+        XCTAssertTrue(widthFour.isSelected, "Freehand width 4 should still be selected after relaunch")
+        attachScreenshot(of: app, named: "workshop-5-width-persisted")
+    }
+
     @MainActor
     private func attachScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())

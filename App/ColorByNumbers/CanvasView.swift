@@ -757,20 +757,35 @@ private struct ModeSwitch: View {
 /// (`DrawingCanvas`'s UIViewRepresentable methods) is main-actor-isolated
 /// already, so this just states that truth to the Swift 6 checker.
 @MainActor
-private enum DrawingFeel {
+enum DrawingFeel {
     /// `.monoline` — a round, constant-width line regardless of speed,
     /// pressure, or direction. Kevin's M3 gate feedback: `.marker` renders
     /// as a chisel tip whose width varies with stroke direction, which read
     /// as "calligraphy" rather than a kid's crayon line.
     static let inkType: PKInkingTool.InkType = .monoline
 
-    /// Per-mode width (Kevin's gate feedback, second round): freehand is
-    /// line DRAWING, where a finer tip is easier to control; boundary-
-    /// assist is coloring-in, where a broader crayon fills faster and the
-    /// clip guards the edges anyway. A parent-adjustable width belongs in
-    /// the Workshop (M4+) — these are the defaults it will start from.
+    /// UserDefaults keys the M4 Workshop's width picker writes to
+    /// (WorkshopView.swift's `DrawingSection`). Exposed (not `private`) so
+    /// that view and this one never drift onto two different key strings —
+    /// this struct stays the single choke point both the read (`width(for:)`
+    /// below) and the write go through, per project memory's "M4 Workshop:
+    /// stroke width setting" note.
+    static let freehandWidthKey = "inkWidth.freehand"
+    static let boundaryWidthKey = "inkWidth.boundary"
+
+    /// Per-mode width: freehand is line DRAWING, where a finer tip is
+    /// easier to control; boundary-assist is coloring-in, where a broader
+    /// crayon fills faster and the clip guards the edges anyway (Kevin's
+    /// M3 gate feedback, second round) — those two numbers are the
+    /// fallback here. The Workshop (M4) lets a parent override either one;
+    /// a stored value of 0 (UserDefaults' "key never set" default) means
+    /// "no override yet," so it falls through to the untouched default
+    /// rather than shrinking the ink to nothing.
     static func width(for mode: CanvasMode) -> CGFloat {
-        mode == .freehand ? 6 : 10
+        let key = mode == .freehand ? freehandWidthKey : boundaryWidthKey
+        let fallback: CGFloat = mode == .freehand ? 6 : 10
+        let stored = UserDefaults.standard.double(forKey: key)
+        return stored > 0 ? CGFloat(stored) : fallback
     }
 }
 
