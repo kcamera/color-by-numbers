@@ -218,6 +218,70 @@ final class StudioFlowUITests: XCTestCase {
         attachScreenshot(of: app, named: "boundary-2-after-undo")
     }
 
+    /// M3's "Color it again" (DESIGN.md, amended): to the child it's a
+    /// fresh page — canvas clears in place, no dialog, no animation — while
+    /// the walked-away-from attempt is archived invisibly underneath
+    /// (`CBNLibrary.newAttempt`'s ring buffer; on-disk survival is checked
+    /// externally via `simctl get_app_container`, per .claude/skills/verify).
+    /// Fills the sky, draws a short freehand stroke, checks the Studio
+    /// thumbnail shows BOTH (this is Feature 2's visual evidence — strokes
+    /// now composite into thumbnails), reopens the card, taps "Color it
+    /// again", and checks the canvas comes back pristine: no fills, no ink,
+    /// no Done badge, and the button itself gone (nothing left to reset).
+    /// Back in the Studio, the thumbnail is a bare outline again.
+    @MainActor
+    func testColorItAgainResetsCanvasAndStudio() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        let card = app.staticTexts["Little Sailboat"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio card never appeared")
+        card.tap()
+
+        let back = app.staticTexts["Studio"]
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not open")
+
+        // Fill the sky, same crayon/coordinate as the other canvas tests.
+        let window = app.windows.firstMatch
+        app.buttons["Color 1"].tap()
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+
+        // A short freehand stroke, so the thumbnail has ink to show
+        // alongside the fill.
+        app.buttons["Draw mode"].tap()
+        let strokeStart = window.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.6))
+        let strokeEnd = window.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.6))
+        strokeStart.press(forDuration: 0.1, thenDragTo: strokeEnd)
+        attachScreenshot(of: app, named: "again-1-canvas-fill-and-stroke")
+
+        // Studio: the honest thumbnail (Feature 2) must show fill AND
+        // stroke together.
+        back.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio grid did not reappear")
+        attachScreenshot(of: app, named: "again-2-studio-fill-and-stroke")
+
+        // Reopen and reset.
+        card.tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not reopen")
+        let colorItAgain = app.buttons["Color it again"]
+        XCTAssertTrue(colorItAgain.waitForExistence(timeout: 5), "Color it again button missing on a non-pristine attempt")
+        colorItAgain.tap()
+
+        // Pristine canvas: no Done badge, and the button itself hides —
+        // nothing left to reset (CBNLibrary.newAttempt's mash-guard would
+        // no-op a second tap anyway).
+        XCTAssertFalse(app.staticTexts["Done"].exists, "Done badge should not survive Color it again")
+        XCTAssertFalse(colorItAgain.exists, "Color it again should hide once the attempt is pristine again")
+        attachScreenshot(of: app, named: "again-3-canvas-pristine")
+
+        // Studio: the thumbnail resets to a bare outline.
+        back.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio grid did not reappear")
+        attachScreenshot(of: app, named: "again-4-studio-pristine")
+    }
+
     @MainActor
     private func attachScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())

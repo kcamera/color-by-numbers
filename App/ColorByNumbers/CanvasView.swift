@@ -176,6 +176,25 @@ final class CanvasModel {
         }
     }
 
+    /// DESIGN.md's amended "Color it again feels like reset": archives the
+    /// attempt she's walking away from — invisibly, ring-buffered — and
+    /// starts a fresh one (`CBNLibrary.newAttempt`'s pristine no-op guard
+    /// means button-mashing an already-blank canvas archives nothing).
+    /// `selectedColorNumber` and `mode` are deliberately left untouched —
+    /// the child keeps her held crayon and tool, same as picking up a
+    /// fresh page at the same desk rather than being sent back to the
+    /// start of the skill ladder. A thrown error leaves state unchanged,
+    /// same defensiveness as `save()` — kid space must never crash over a
+    /// persistence hiccup.
+    func colorItAgain() {
+        do {
+            attempt = try library.newAttempt(in: item.id)
+            drawing = PKDrawing()
+        } catch {
+            assertionFailure("Failed to color it again: \(error)")
+        }
+    }
+
     private func save() {
         do {
             try library.saveAttempt(attempt, in: item.id)
@@ -344,6 +363,7 @@ struct CanvasView: View {
         // take back.
         let canUndo = !model.attempt.effectiveActionLog.isEmpty
         let isComplete = model.attempt.isComplete(for: template)
+        let isPristine = model.attempt.isPristine
 
         ZStack {
             DeskStyle.deskColor.ignoresSafeArea()
@@ -451,8 +471,18 @@ struct CanvasView: View {
                 HStack {
                     BackControl { dismiss() }
                     Spacer()
-                    if isComplete {
-                        DoneBadge()
+                    // Leading side of the Done badge in this same HStack,
+                    // per M3 spec. Hidden on a pristine attempt: resetting
+                    // nothing would be a no-op anyway (CBNLibrary.newAttempt's
+                    // mash-guard), and hiding it here keeps the top edge
+                    // quiet on first open (DESIGN.md's calm contract).
+                    HStack(spacing: 12) {
+                        if !isPristine {
+                            ColorItAgainControl { model.colorItAgain() }
+                        }
+                        if isComplete {
+                            DoneBadge()
+                        }
                     }
                 }
                 Spacer()
@@ -601,6 +631,29 @@ private struct BackControl: View {
             .background(Capsule(style: .continuous).fill(Color.white.opacity(0.7)))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// A quiet text capsule, same material and typography as `BackControl` —
+/// DESIGN.md's amended "Color it again feels like reset": to the child
+/// it's a fresh page (canvas clears in place), no dialog, no animation, no
+/// sound; the archive underneath (`CanvasModel.colorItAgain`) is invisible.
+/// `CanvasView.body` shows this only while the attempt is non-pristine.
+private struct ColorItAgainControl: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text("Color it again")
+                .font(.system(.body, design: .rounded, weight: .medium))
+                .foregroundStyle(DeskStyle.inkColor)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Capsule(style: .continuous).fill(Color.white.opacity(0.7)))
+        }
+        .buttonStyle(.plain)
+        // Spoken name for VoiceOver; also the UI-test driver's handle.
+        .accessibilityLabel("Color it again")
     }
 }
 
