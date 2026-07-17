@@ -1,11 +1,59 @@
 import Foundation
 
 /// One entry in `CBNAttempt.actionLog` — which kind of thing the child did,
-/// in the order it happened. `String` raw values keep the persisted JSON
-/// readable, matching every other Codable type in this package.
-public enum CBNAttemptAction: String, Codable, Sendable {
+/// in the order it happened. A `strokes` entry is ONE drawing gesture:
+/// boundary-assist clipping can bake a single gesture into several
+/// `PKStroke`s (the line splits wherever it leaves the allowed area), and
+/// undo must take back the whole gesture, so the entry carries how many
+/// sub-strokes it produced. Persisted as a single readable string —
+/// `"fill"`, `"stroke"` (one sub-stroke; also what early-M3 files already
+/// contain), or `"strokes:N"` — so the JSON stays as legible as every other
+/// Codable type in this package and old files keep decoding forever.
+public enum CBNAttemptAction: Codable, Equatable, Sendable {
     case fill
-    case stroke
+    case strokes(Int)
+
+    /// The common single-sub-stroke gesture, and the decoded form of the
+    /// legacy `"stroke"` string.
+    public static let stroke = CBNAttemptAction.strokes(1)
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "fill":
+            self = .fill
+        case "stroke":
+            self = .strokes(1)
+        default:
+            guard raw.hasPrefix("strokes:"), let count = Int(raw.dropFirst("strokes:".count)), count > 0 else {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Unrecognized attempt action '\(raw)'"
+                ))
+            }
+            self = .strokes(count)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .fill: try container.encode("fill")
+        // One sub-stroke encodes as the legacy spelling, so a freehand-only
+        // attempt's JSON is byte-identical to what early M3 already wrote.
+        case .strokes(1): try container.encode("stroke")
+        case .strokes(let count): try container.encode("strokes:\(count)")
+        }
+    }
+
+    /// True for any drawing-gesture entry, regardless of sub-stroke count —
+    /// what undo dispatch and `undoLastStroke`'s precondition actually care
+    /// about (`== .stroke` would wrongly reject a clipped multi-sub-stroke
+    /// gesture).
+    public var isStrokeGesture: Bool {
+        if case .strokes = self { return true }
+        return false
+    }
 }
 
 /// One coloring session of one template. "Color it again" (docs/DESIGN.md's
@@ -111,14 +159,17 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
         updatedAt = max(Date(), updatedAt)
     }
 
-    /// Records a completed freehand/boundary-assist stroke: assigns the
-    /// freshly re-serialized drawing, appends `.stroke` to the log, and
-    /// bumps `updatedAt` — the interactive canvas's autosave path (DESIGN.md
-    /// "continuous autosave"), called once per completed `PKStroke`.
-    public mutating func recordStroke(_ data: Data) {
+    /// Records a completed freehand/boundary-assist drawing gesture:
+    /// assigns the freshly re-serialized drawing, appends one `.strokes`
+    /// entry to the log, and bumps `updatedAt` — the interactive canvas's
+    /// autosave path (DESIGN.md "continuous autosave"), called once per
+    /// completed gesture. `substrokes` is how many `PKStroke`s the gesture
+    /// baked into (1 for freehand; boundary-assist clipping can split one
+    /// gesture into several), so undo knows how many to remove together.
+    public mutating func recordStroke(_ data: Data, substrokes: Int = 1) {
         materializeActionLogIfNeeded()
         drawingData = data
-        actionLog?.append(.stroke)
+        actionLog?.append(.strokes(substrokes))
         updatedAt = max(Date(), updatedAt)
     }
 
@@ -130,7 +181,7 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
     public mutating func undoLastStroke(updatedDrawing: Data?) {
         materializeActionLogIfNeeded()
         guard actionLog?.isEmpty == false else { return }
-        assert(actionLog?.last == .stroke, "undoLastStroke called but the last action wasn't a stroke")
+        assert(actionLog?.last?.isStrokeGesture == true, "undoLastStroke called but the last action wasn't a stroke gesture")
         drawingData = updatedDrawing
         actionLog?.removeLast()
         updatedAt = max(Date(), updatedAt)

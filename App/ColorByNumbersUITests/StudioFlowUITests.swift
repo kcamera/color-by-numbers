@@ -183,6 +183,41 @@ final class StudioFlowUITests: XCTestCase {
         attachScreenshot(of: app, named: "freehand-5-after-second-undo")
     }
 
+    /// Boundary-assist (M3's middle mode): ink lands only where the held
+    /// crayon's number lives, and one Undo takes back the whole gesture.
+    /// Drags one long horizontal stroke through the sailboat at ~45%
+    /// height while holding the sky crayon — that row is sky, interrupted
+    /// by both sails (Sailcloth, a different number), so the single
+    /// gesture must bake into multiple sub-strokes with visible gaps at
+    /// the sails. Visual proof: screenshots. Data proof: the on-disk
+    /// actionLog records ONE "strokes:N" (N≥2) entry, inspected externally
+    /// per .claude/skills/verify. Undo must then remove every sub-stroke
+    /// at once — the child undoes her gesture, not the clipper's output.
+    @MainActor
+    func testBoundaryAssistClipsAndUndoesWholeGesture() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        let card = app.staticTexts["Little Sailboat"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio card never appeared")
+        card.tap()
+        XCTAssertTrue(app.staticTexts["Studio"].waitForExistence(timeout: 10), "Canvas did not open")
+
+        app.buttons["Color 1"].tap()
+        app.buttons["Lines mode"].tap()
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.45))
+        let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        attachScreenshot(of: app, named: "boundary-1-clipped-stroke")
+
+        // One Undo, whole gesture: every sub-stroke disappears together.
+        app.buttons["Undo"].tap()
+        attachScreenshot(of: app, named: "boundary-2-after-undo")
+    }
+
     @MainActor
     private func attachScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())

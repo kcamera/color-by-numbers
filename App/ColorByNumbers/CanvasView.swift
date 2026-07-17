@@ -2,35 +2,50 @@ import CBNKit
 import PencilKit
 import SwiftUI
 
-/// Which coloring tool is live (DESIGN.md's skill ladder). Two cases today;
-/// boundary-assist (real drawing, strokes clipped to the active region)
-/// lands as a third, MIDDLE case once the clipping engine exists (a later
-/// milestone). `CaseIterable` + `Hashable` so every switch/`ForEach` over
-/// `CanvasMode` in this file (`ModeSwitch` below, `DrawingCanvas`'s active
-/// state) picks up a new case by construction — adding boundary-assist
-/// should mean one new case plus whatever the compiler then points at, not
-/// a UI rewrite.
+/// Which coloring tool is live — DESIGN.md's full skill ladder, in
+/// declaration order = switch order: tap-to-fill (toddler), boundary-assist
+/// (preschool: real drawing, ink only lands where the held crayon's number
+/// lives), freehand (elementary). `CaseIterable` + `Hashable` so every
+/// switch/`ForEach` over `CanvasMode` in this file picks a new case up by
+/// construction.
 enum CanvasMode: CaseIterable, Hashable {
     case tapFill
+    case boundaryAssist
     case freehand
 }
 
 private extension CanvasMode {
-    var systemImageName: String {
-        switch self {
-        case .tapFill: "hand.point.up.left"
-        // Placeholder glyph (M3 spec): the real clipped/escaping-squiggle
-        // icon is M6 polish.
-        case .freehand: "scribble"
-        }
-    }
-
     /// Doubles as the UI-test driver's handle, same dual purpose as
     /// "Undo" and "Color N" elsewhere in this file.
     var accessibilityLabel: String {
         switch self {
         case .tapFill: "Tap mode"
+        case .boundaryAssist: "Lines mode"
         case .freehand: "Draw mode"
+        }
+    }
+}
+
+/// Placeholder glyphs (M3): Kevin's real icons — fingertip, squiggle being
+/// clipped BY a shape, squiggle escaping a shape — are M6 polish; until
+/// then the middle mode is literally a squiggle held inside a shape and
+/// freehand the same squiggle unboxed, honest pictures of the behaviors.
+private struct ModeIcon: View {
+    let mode: CanvasMode
+
+    var body: some View {
+        switch mode {
+        case .tapFill:
+            Image(systemName: "hand.point.up.left")
+                .font(.system(size: 24, weight: .medium))
+        case .boundaryAssist:
+            Image(systemName: "scribble")
+                .font(.system(size: 17, weight: .medium))
+                .padding(5)
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(lineWidth: 1.5))
+        case .freehand:
+            Image(systemName: "scribble")
+                .font(.system(size: 24, weight: .medium))
         }
     }
 }
@@ -121,35 +136,37 @@ final class CanvasModel {
         self.mode = mode
     }
 
-    /// `DrawingCanvas`'s autosave path: called once per completed stroke
-    /// with its freshly re-serialized drawing (never for programmatic
-    /// loads — the canvas wrapper suppresses those before this is ever
-    /// reached). Mirrors `tap`'s save-through contract (DESIGN.md's
-    /// continuous autosave). A decode failure leaves `drawing` as it was —
-    /// the attempt still records the stroke, so nothing is lost, only the
-    /// in-memory mirror stays one stroke behind until the next successful
-    /// round trip.
-    func strokeChanged(_ data: Data) {
-        if let redecoded = try? PKDrawing(data: data) {
-            drawing = redecoded
-        }
-        attempt.recordStroke(data)
+    /// `DrawingCanvas`'s per-gesture autosave path: the live canvas hands
+    /// over the finished gesture's strokes — already clipped by the view in
+    /// boundary-assist mode — and clears itself; committed ink lives here,
+    /// in `drawing`. An empty `landed` (a boundary gesture made entirely
+    /// outside the held crayon's regions) is the calm no-op: the in-flight
+    /// mask already showed no ink, so nothing appears and nothing is
+    /// logged. Mirrors `tap`'s save-through contract (DESIGN.md's
+    /// continuous autosave).
+    func gestureCompleted(landing landed: [PKStroke]) {
+        guard !landed.isEmpty else { return }
+        drawing = PKDrawing(strokes: drawing.strokes + landed)
+        attempt.recordStroke(drawing.dataRepresentation(), substrokes: landed.count)
         save()
     }
 
     /// Generous, always-available undo (DESIGN.md), unified across both
     /// action kinds (M3): consults which kind of thing happened last and
     /// takes back exactly that, rather than always assuming a fill. A
-    /// no-op when nothing has ever happened in this attempt, so the button
-    /// can stay tappable rather than disabled.
+    /// stroke entry undoes as a whole GESTURE — boundary-assist may have
+    /// baked one gesture into several sub-strokes, and the child undoes
+    /// what she did, not what the clipper did. A no-op when nothing has
+    /// ever happened in this attempt, so the button can stay tappable
+    /// rather than disabled.
     func undo() {
         switch attempt.effectiveActionLog.last {
         case .fill:
             attempt.undoLastFill()
             save()
-        case .stroke:
+        case .strokes(let count):
             var strokes = drawing.strokes
-            strokes.removeLast()
+            strokes.removeLast(min(count, strokes.count))
             let updated = PKDrawing(strokes: strokes)
             drawing = updated
             attempt.undoLastStroke(updatedDrawing: strokes.isEmpty ? nil : updated.dataRepresentation())
@@ -167,6 +184,88 @@ final class CanvasModel {
             // the coloring already happened on screen; only the persistence
             // of it failed.
             assertionFailure("Failed to save attempt: \(error)")
+        }
+    }
+}
+
+/// One region's outer ring + hole rings as a single even-odd Path in view
+/// space — shared by the fills renderer (`CanvasView.draw`) and the
+/// boundary-assist mask (`BoundaryMask`) so the two can never disagree
+/// about where a region is.
+private func regionPath(_ region: CBNRegion, fit: FitTransform) -> Path {
+    var path = Path()
+    for ring in [region.path] + region.holes where ring.count >= 3 {
+        path.move(to: fit.templateToView(ring[0]))
+        for point in ring.dropFirst() {
+            path.addLine(to: fit.templateToView(point))
+        }
+        path.closeSubpath()
+    }
+    return path
+}
+
+/// Alpha mask of "where the held crayon's ink may land": the VISIBLE area
+/// of regions matching the selected number, in painter's order — a matching
+/// region masks in, and any region drawn later masks back OUT
+/// (`.destinationOut`), so a sky-colored stroke can't paint through the
+/// sails stacked on top of the sky polygon. View-level and current-color
+/// only: it exists for the in-flight stroke's feel; committed strokes are
+/// clipped in their DATA (StrokeClipper) and never pass through this.
+private struct BoundaryMask: View {
+    let template: CBNTemplate
+    let selectedColorNumber: Int
+    let fit: FitTransform
+
+    var body: some View {
+        Canvas { context, _ in
+            for region in template.regions where region.path.count >= 3 {
+                context.blendMode = region.colorNumber == selectedColorNumber ? .normal : .destinationOut
+                context.fill(
+                    regionPath(region, fit: fit),
+                    with: .color(.white),
+                    style: FillStyle(eoFill: true)
+                )
+            }
+        }
+    }
+}
+
+/// Bakes boundary-assist's promise into the stroke DATA: sample the
+/// finished gesture finely, keep only the samples where ink is allowed, and
+/// rebuild the survivors as separate strokes wherever the gesture left the
+/// allowed area. Data-level rather than a view mask because committed
+/// strokes from DIFFERENT crayons must coexist — a view mask fits only one
+/// color at a time and would re-clip old ink on every crayon change.
+@MainActor
+private enum StrokeClipper {
+    /// Sample step along the path, in view points: fine enough that a fast
+    /// flick can't tunnel across a thin forbidden band between two allowed
+    /// regions.
+    static let sampleStep: CGFloat = 2
+
+    static func clip(_ stroke: PKStroke, allowedAt: (CGPoint) -> Bool) -> [PKStroke] {
+        var runs: [[PKStrokePoint]] = []
+        var current: [PKStrokePoint] = []
+        for point in stroke.path.interpolatedPoints(by: .distance(sampleStep)) {
+            if allowedAt(point.location.applying(stroke.transform)) {
+                current.append(point)
+            } else if !current.isEmpty {
+                runs.append(current)
+                current = []
+            }
+        }
+        if !current.isEmpty { runs.append(current) }
+
+        // A one-sample run is a sampling artifact at a border crossing, not
+        // something the child meaningfully drew — dropping it beats leaving
+        // stray dots along region edges.
+        return runs.filter { $0.count >= 2 }.map { run in
+            PKStroke(
+                ink: stroke.ink,
+                path: PKStrokePath(controlPoints: run, creationDate: stroke.path.creationDate),
+                transform: stroke.transform,
+                mask: stroke.mask
+            )
         }
     }
 }
@@ -200,6 +299,23 @@ private struct FitTransform {
     func viewToTemplate(_ point: CGPoint) -> CBNPoint {
         CBNPoint(x: (point.x - origin.x) / scale, y: (point.y - origin.y) / scale)
     }
+
+    /// The same mappings as affine transforms, for whole-PKDrawing
+    /// conversion. Strokes PERSIST in template space — the document's own
+    /// coordinate system, like every region path — never in view points:
+    /// view space is an accident of one session's canvas size, and a
+    /// drawing saved in it would silently misregister on any other size
+    /// (a different iPad, a future layout tweak) and couldn't be composited
+    /// into Studio thumbnails at all.
+    var viewToTemplateTransform: CGAffineTransform {
+        CGAffineTransform(translationX: -origin.x, y: -origin.y)
+            .concatenating(CGAffineTransform(scaleX: 1 / scale, y: 1 / scale))
+    }
+
+    var templateToViewTransform: CGAffineTransform {
+        CGAffineTransform(scaleX: scale, y: scale)
+            .concatenating(CGAffineTransform(translationX: origin.x, y: origin.y))
+    }
 }
 
 /// The coloring canvas: tap a region, it fills. Skill-ladder mode 1
@@ -208,6 +324,7 @@ private struct FitTransform {
 struct CanvasView: View {
     @State private var model: CanvasModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
 
     init(library: CBNLibrary, item: CBNLibraryItem) {
         _model = State(initialValue: CanvasModel(library: library, item: item))
@@ -219,6 +336,9 @@ struct CanvasView: View {
         // than to Canvas's separate rendering closure.
         let template = model.template
         let filledIDs = Set(model.attempt.filledRegionIDs)
+        let drawing = model.drawing
+        let mode = model.mode
+        let selectedColorNumber = model.selectedColorNumber
         // M3: the log, not the fill count, is what Undo dims on — an
         // attempt that's all strokes and no fills still has something to
         // take back.
@@ -250,16 +370,71 @@ struct CanvasView: View {
                         draw(template: template, filledIDs: filledIDs, fit: fit, in: context)
                     }
 
-                    // Above the fills, below every control layer added
-                    // further down this ZStack (M3 spec). Sized to exactly
-                    // this same page rect so it lines up pixel-for-pixel
-                    // with what `Canvas` just drew.
+                    // COMMITTED ink: every completed gesture, rendered from
+                    // the single source of truth (model.drawing). A separate
+                    // layer from the live PKCanvasView below so boundary-
+                    // assist's in-flight mask can never re-clip strokes made
+                    // earlier with a DIFFERENT crayon — those were clipped
+                    // at the data level when their gesture ended, and render
+                    // here mask-free.
+                    if !drawing.strokes.isEmpty {
+                        // Committed strokes live in TEMPLATE space (see
+                        // FitTransform.viewToTemplateTransform); map them
+                        // into this session's view space to draw.
+                        Image(uiImage: drawing
+                            .transformed(using: fit.templateToViewTransform)
+                            .image(from: pageRect, scale: displayScale))
+                            .frame(width: pageRect.width, height: pageRect.height)
+                            .allowsHitTesting(false)
+                    }
+
+                    // LIVE ink: only ever the in-flight gesture; hands its
+                    // strokes up on completion and clears itself. Above the
+                    // fills and committed ink, below every control layer.
                     DrawingCanvas(
-                        drawing: model.drawing,
-                        isActive: model.mode == .freehand,
-                        inkColor: paletteColor(for: model.selectedColorNumber, in: template)
-                    ) { newDrawing in
-                        model.strokeChanged(newDrawing.dataRepresentation())
+                        isActive: mode != .tapFill,
+                        inkColor: paletteColor(for: selectedColorNumber, in: template)
+                    ) { gestureStrokes in
+                        let landed: [PKStroke]
+                        if mode == .boundaryAssist {
+                            // Data-level clip: keep the samples where the
+                            // topmost region under the pen matches the held
+                            // crayon — occlusion for free, since "visible
+                            // region at a point" IS the hit test.
+                            landed = gestureStrokes.flatMap { stroke in
+                                StrokeClipper.clip(stroke) { location in
+                                    guard let region = template.region(at: fit.viewToTemplate(location))
+                                    else { return false }
+                                    return region.colorNumber == selectedColorNumber
+                                }
+                            }
+                        } else {
+                            landed = gestureStrokes
+                        }
+                        // Persist in template space, the document's own
+                        // coordinate system — view points are an accident
+                        // of this session's canvas size.
+                        model.gestureCompleted(
+                            landing: PKDrawing(strokes: landed)
+                                .transformed(using: fit.viewToTemplateTransform)
+                                .strokes
+                        )
+                    }
+                    .mask {
+                        // In-flight feel for boundary-assist: while the
+                        // finger is still down, ink only shows where the
+                        // held crayon may land (the data clip then makes
+                        // that permanent at gesture end). Other modes get
+                        // full visibility.
+                        if mode == .boundaryAssist {
+                            BoundaryMask(
+                                template: template,
+                                selectedColorNumber: selectedColorNumber,
+                                fit: fit
+                            )
+                        } else {
+                            Rectangle()
+                        }
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
@@ -362,16 +537,7 @@ struct CanvasView: View {
 
         for region in template.regions {
             guard region.path.count >= 3 else { continue }
-
-            var path = Path()
-            for ring in [region.path] + region.holes where ring.count >= 3 {
-                path.move(to: fit.templateToView(ring[0]))
-                for point in ring.dropFirst() {
-                    path.addLine(to: fit.templateToView(point))
-                }
-                path.closeSubpath()
-            }
-
+            let path = regionPath(region, fit: fit)
             let isFilled = filledIDs.contains(region.id)
             var fillColor = Color.white
             if isFilled, let rgb = paletteByNumber[region.colorNumber] ?? nil {
@@ -482,11 +648,10 @@ private struct UndoControl: View {
     }
 }
 
-/// The skill-ladder mode switch (DESIGN.md): a quiet two-position control in
-/// the same white-capsule material as Back/Done, one button per
-/// `CanvasMode` case so a third (boundary-assist) slots in without a layout
-/// change. Selected state mirrors `PaletteSwatch`'s ring — a stronger
-/// stroke, not a color change (no reward circuitry).
+/// The skill-ladder mode switch (DESIGN.md): a quiet three-position control
+/// in the same white-capsule material as Back/Done, one button per
+/// `CanvasMode` case. Selected state mirrors `PaletteSwatch`'s ring — a
+/// stronger stroke, not a color change (no reward circuitry).
 private struct ModeSwitch: View {
     let mode: CanvasMode
     let onSelect: (CanvasMode) -> Void
@@ -495,8 +660,7 @@ private struct ModeSwitch: View {
         HStack(spacing: 12) {
             ForEach(CanvasMode.allCases, id: \.self) { candidate in
                 Button(action: { onSelect(candidate) }) {
-                    Image(systemName: candidate.systemImageName)
-                        .font(.system(size: 24, weight: .medium))
+                    ModeIcon(mode: candidate)
                         .foregroundStyle(DeskStyle.inkColor)
                         .frame(width: 64, height: 64)
                         .overlay(
@@ -529,19 +693,21 @@ private enum DrawingFeel {
     static let width: CGFloat = 10
 }
 
-/// PencilKit's real canvas, wrapped for SwiftUI — the freehand/boundary-
-/// assist drawing surface (DESIGN.md's skill ladder). `drawing` is the
-/// single source of truth (`CanvasModel.drawing`); this type only ever
-/// mirrors it into the live `PKCanvasView`, never the other way except
-/// through `onStrokeAdded`.
+/// PencilKit's real canvas, wrapped for SwiftUI — but deliberately holding
+/// ONLY the in-flight gesture, never the whole picture. On completion the
+/// gesture's strokes are handed up (`onGesture`) and the canvas clears
+/// itself; committed ink is `CanvasModel.drawing`, rendered by the separate
+/// committed-image layer in `CanvasView.body`. The split is what makes
+/// boundary-assist coherent across crayon changes: the live layer wears the
+/// current crayon's mask, while committed strokes — already data-clipped to
+/// whatever crayon made them — render mask-free.
 private struct DrawingCanvas: UIViewRepresentable {
-    let drawing: PKDrawing
     /// Tap-to-fill mode must not have this layer intercept touches at all
     /// (M3 spec) — the tap gesture on the `Canvas` beneath is naturally
     /// occluded once this becomes interactive.
     let isActive: Bool
     let inkColor: Color
-    let onStrokeAdded: (PKDrawing) -> Void
+    let onGesture: ([PKStroke]) -> Void
 
     func makeUIView(context: Context) -> PKCanvasView {
         let view = PKCanvasView()
@@ -556,65 +722,46 @@ private struct DrawingCanvas: UIViewRepresentable {
         view.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: DrawingFeel.width)
         view.isUserInteractionEnabled = isActive
         view.delegate = context.coordinator
-        context.coordinator.installProgrammatically(drawing, into: view)
         return view
     }
 
     func updateUIView(_ uiView: PKCanvasView, context: Context) {
         uiView.isUserInteractionEnabled = isActive
         uiView.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: DrawingFeel.width)
-        context.coordinator.syncIfNeeded(drawing, into: uiView)
+        // The gesture handler captures mode/crayon/fit from the CURRENT
+        // body evaluation — refresh it every update, or the coordinator
+        // would clip tomorrow's strokes with yesterday's crayon.
+        context.coordinator.onGesture = onGesture
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onStrokeAdded: onStrokeAdded)
+        Coordinator(onGesture: onGesture)
     }
 
-    /// `PKCanvasViewDelegate` bridge. Its one callback,
-    /// `canvasViewDrawingDidChange`, fires both for the child's own strokes
-    /// AND for programmatic drawing assignment (restore on open, undo) —
-    /// the delegate-callback pitfall the M3 spec calls out explicitly. Two
-    /// guards keep programmatic loads from appending phantom log entries:
-    /// `isInstallingProgrammatically` (set only around `installProgrammatically`'s
-    /// own assignment) and a raw stroke-COUNT comparison (only a genuine
-    /// increase — a stroke actually added — is forwarded; a decrease or a
-    /// same-count mutation never is).
+    /// `PKCanvasViewDelegate` bridge. `canvasViewDrawingDidChange` fires for
+    /// programmatic assignment too — including this coordinator's own
+    /// clear-after-handoff — so the clear is wrapped in a reentrancy flag.
+    /// Because the live canvas is empty between gestures, any non-empty,
+    /// non-clearing change IS the completed gesture: hand it up first, then
+    /// clear; both land in the same SwiftUI transaction as the model update,
+    /// so the ink moves from the live layer to the committed image without
+    /// a visible gap.
     final class Coordinator: NSObject, PKCanvasViewDelegate {
-        private let onStrokeAdded: (PKDrawing) -> Void
-        private var isInstallingProgrammatically = false
-        private var lastKnownStrokeCount = 0
-        /// `PKDrawing` is a value type (`Equatable`, not a class), so this
-        /// is a content comparison, not identity — but the point is the
-        /// same: skip reinstalling on every unrelated SwiftUI re-render (a
-        /// color swap, a mode switch), which would otherwise reset the live
-        /// view mid-gesture for no reason. Only a genuinely different
-        /// drawing (restore, undo, or this coordinator's own round-tripped
-        /// copy after a stroke) should trigger it.
-        private var lastInstalledDrawing: PKDrawing?
+        var onGesture: ([PKStroke]) -> Void
+        private var isClearing = false
 
-        init(onStrokeAdded: @escaping (PKDrawing) -> Void) {
-            self.onStrokeAdded = onStrokeAdded
-        }
-
-        func installProgrammatically(_ drawing: PKDrawing, into view: PKCanvasView) {
-            isInstallingProgrammatically = true
-            view.drawing = drawing
-            isInstallingProgrammatically = false
-            lastKnownStrokeCount = drawing.strokes.count
-            lastInstalledDrawing = drawing
-        }
-
-        func syncIfNeeded(_ drawing: PKDrawing, into view: PKCanvasView) {
-            guard drawing != lastInstalledDrawing else { return }
-            installProgrammatically(drawing, into: view)
+        init(onGesture: @escaping ([PKStroke]) -> Void) {
+            self.onGesture = onGesture
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-            guard !isInstallingProgrammatically else { return }
-            let count = canvasView.drawing.strokes.count
-            defer { lastKnownStrokeCount = count }
-            guard count > lastKnownStrokeCount else { return }
-            onStrokeAdded(canvasView.drawing)
+            guard !isClearing else { return }
+            let strokes = canvasView.drawing.strokes
+            guard !strokes.isEmpty else { return }
+            onGesture(strokes)
+            isClearing = true
+            canvasView.drawing = PKDrawing()
+            isClearing = false
         }
     }
 }

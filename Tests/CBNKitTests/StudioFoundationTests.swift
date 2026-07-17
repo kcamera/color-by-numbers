@@ -236,6 +236,42 @@ private let v1AttemptJSON = """
 
 // MARK: - CBNAttempt.actionLog (M3 interleaved undo)
 
+/// The action strings are a persistence contract: "fill" and "stroke" are
+/// already on real iPads from early M3, and "strokes:N" joins them for
+/// boundary-assist's clipped gestures. All three must decode; the
+/// single-sub-stroke case must keep ENCODING as the legacy "stroke" so
+/// freehand-only attempts stay byte-identical.
+@Test func attemptActionStringsRoundTripAllThreeSpellings() throws {
+    let decoder = JSONDecoder()
+    let decoded = try decoder.decode([CBNAttemptAction].self, from: Data(#"["fill","stroke","strokes:4"]"#.utf8))
+    #expect(decoded == [.fill, .strokes(1), .strokes(4)])
+
+    let encoded = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
+    #expect(encoded == #"["fill","stroke","strokes:4"]"#)
+
+    #expect(throws: DecodingError.self) {
+        _ = try decoder.decode([CBNAttemptAction].self, from: Data(#"["strokes:0"]"#.utf8))
+    }
+    #expect(throws: DecodingError.self) {
+        _ = try decoder.decode([CBNAttemptAction].self, from: Data(#"["scribble"]"#.utf8))
+    }
+}
+
+/// A clipped gesture logs once with its sub-stroke count, and one undo
+/// takes the WHOLE gesture back — the child made one gesture, undo removes
+/// one gesture (the caller drops that many PKStrokes; the model just pops
+/// the single log entry).
+@Test func attemptMultiSubstrokeGestureLogsOnceAndUndoesOnce() {
+    var attempt = CBNAttempt()
+    attempt.fill("r0")
+    attempt.recordStroke(Data([0x01]), substrokes: 3)
+    #expect(attempt.effectiveActionLog == [.fill, .strokes(3)])
+
+    attempt.undoLastStroke(updatedDrawing: nil)
+    #expect(attempt.effectiveActionLog == [.fill])
+    #expect(attempt.drawingData == nil)
+}
+
 /// Same v1 fixture as above, missing `actionLog` entirely (it predates the
 /// field just as much as `drawingData` does): decodes with a nil stored log,
 /// and `effectiveActionLog` must reconstruct the only history a pre-log
