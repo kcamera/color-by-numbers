@@ -1,4 +1,5 @@
 import CBNKit
+import PencilKit
 import SwiftUI
 
 /// The kid's library — DESIGN.md's "Studio": a grid of coloring pages, tap
@@ -95,20 +96,67 @@ struct StudioView: View {
             // this exact attempt state — skip the (comparatively expensive)
             // CPU rasterization entirely.
             guard thumbnails[key] == nil else { continue }
-            renderThumbnail(for: item, filledRegionIDs: Set(attempt?.filledRegionIDs ?? []), key: key)
+            renderThumbnail(for: item, attempt: attempt, key: key)
         }
     }
 
-    private func renderThumbnail(for item: CBNLibraryItem, filledRegionIDs: Set<String>, key: ThumbnailKey) {
+    /// Renders the outline-and-fills bitmap (`TemplateRenderer`), then, if
+    /// the attempt has a drawing, composites her strokes on top — DESIGN.md's
+    /// honest-thumbnail rule: the Studio grid must reflect what she actually
+    /// drew, not just where she tapped. Strokes persist in TEMPLATE
+    /// coordinates (see `FitTransform.viewToTemplateTransform`'s doc comment,
+    /// CanvasView.swift), so `PKDrawing.image(from:scale:)` at this same
+    /// `scale` lines up with `TemplateRenderer`'s bitmap pixel-for-pixel —
+    /// no view-space transform needed, unlike the live canvas. Cache
+    /// invalidation needs no changes here: `ThumbnailKey` is keyed on
+    /// `updatedAt`, and `recordStroke` already bumps that exactly like
+    /// `fill` does, so a stroke-only change still misses the cache.
+    private func renderThumbnail(for item: CBNLibraryItem, attempt: CBNAttempt?, key: ThumbnailKey) {
         let targetWidth = 360.0
         let scale = targetWidth / max(item.template.size.width, 1)
         // `.outline` + `filledRegionIDs`: the in-progress face of
         // TemplateRenderer (see its doc comment) — the same appearance the
         // child sees on the canvas, baked to a bitmap for the grid.
         guard let cgImage = TemplateRenderer.render(
-            item.template, mode: .outline, scale: scale, filledRegionIDs: filledRegionIDs
+            item.template, mode: .outline, scale: scale, filledRegionIDs: Set(attempt?.filledRegionIDs ?? [])
         ) else { return }
-        thumbnails[key] = Image(decorative: cgImage, scale: 1)
+
+        guard let data = attempt?.drawingData,
+              let drawing = try? PKDrawing(data: data),
+              // The shared renderer applies boundary-assist's paint clip
+              // per gesture (CommittedInkRenderer) — the thumbnail must
+              // show exactly what the canvas shows, bloom included-out.
+              let strokesImage = CommittedInkRenderer.image(
+                  drawing: drawing,
+                  actionLog: attempt?.effectiveActionLog ?? [],
+                  filledRegionIDs: attempt?.filledRegionIDs ?? [],
+                  template: item.template,
+                  scale: scale
+              )
+        else {
+            thumbnails[key] = Image(decorative: cgImage, scale: 1)
+            return
+        }
+
+        let pixelSize = CGSize(width: cgImage.width, height: cgImage.height)
+
+        // Compositing with UIKit's own `draw(in:)`, never the raw
+        // CGContext `draw(_:in:)`: both source images (TemplateRenderer's
+        // CGImage and PencilKit's `drawing.image`) are already top-left-
+        // origin, UIKit-convention images, and `UIGraphicsImageRenderer`'s
+        // context is likewise flipped to match UIKit — drawing through
+        // UIImage keeps that convention consistent throughout. The raw
+        // CGContext API expects bottom-left-origin CGImages and would
+        // silently flip one layer relative to the other. Verified visually
+        // (see .claude/skills/verify) rather than assumed.
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
+        let composited = renderer.image { _ in
+            UIImage(cgImage: cgImage).draw(in: CGRect(origin: .zero, size: pixelSize))
+            strokesImage.draw(in: CGRect(origin: .zero, size: pixelSize))
+        }
+        thumbnails[key] = Image(uiImage: composited)
     }
 }
 

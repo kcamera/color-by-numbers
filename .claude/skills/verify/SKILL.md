@@ -55,3 +55,13 @@ find "$CONTAINER/Documents/Library" -name '*.json'   # items + attempts
 - UI-test buttons: undo is reachable as `app.buttons["Undo"]`
   (accessibility label), back control via `app.staticTexts["Studio"]`,
   studio cards via their title text.
+
+## Stale test bundle (xcodebuild test runs 0 or N-1 tests)
+
+A test method added moments before `xcodebuild ... test` can silently
+miss the compiled bundle — the run reports "Executed 3 tests" (or
+`-only-testing:` a new test reports "Executed 0 tests, TEST SUCCEEDED",
+which looks like a pass but ran NOTHING). `touch` on the file is not
+always enough. Fix: `xcodebuild ... clean` first, then run the suite.
+Always check the "Executed N tests" count matches the number of test
+methods you expect.
