@@ -352,6 +352,11 @@ struct CanvasView: View {
         // than to Canvas's separate rendering closure.
         let template = model.template
         let filledIDs = Set(model.attempt.filledRegionIDs)
+        // Ordered, unlike `filledIDs` above: the committed-ink renderer
+        // needs fill CHRONOLOGY (which fill happened at which point in the
+        // log), not just fill membership, to repaint a late fill over an
+        // earlier scribble (M3 crayon-layering fix).
+        let filledRegionIDs = model.attempt.filledRegionIDs
         let drawing = model.drawing
         let actionLog = model.attempt.effectiveActionLog
         let mode = model.mode
@@ -404,6 +409,7 @@ struct CanvasView: View {
                     if let ink = CommittedInkRenderer.image(
                         drawing: drawing,
                         actionLog: actionLog,
+                        filledRegionIDs: filledRegionIDs,
                         template: template,
                         scale: fit.scale,
                         screenScale: displayScale

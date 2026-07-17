@@ -129,6 +129,7 @@ struct StudioView: View {
               let strokesImage = CommittedInkRenderer.image(
                   drawing: drawing,
                   actionLog: attempt?.effectiveActionLog ?? [],
+                  filledRegionIDs: attempt?.filledRegionIDs ?? [],
                   template: item.template,
                   scale: scale
               )

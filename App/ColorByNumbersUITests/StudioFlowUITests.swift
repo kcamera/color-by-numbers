@@ -294,6 +294,64 @@ final class StudioFlowUITests: XCTestCase {
         attachScreenshot(of: app, named: "again-4-studio-pristine")
     }
 
+    /// The M3 crayon-layering fix: real crayons stack by TIME, so a region
+    /// tap-filled AFTER a freehand scribble crossed it must paint OVER that
+    /// scribble, not under it (`CommittedInkRenderer.image`'s chronological
+    /// fill repaint). Rings is the vehicle because its center region — the
+    /// bullseye, `rings.json`'s innermost ring, colorNumber 5 ("Green") — sits
+    /// at normalized (0.5, 0.5) of the landscape window: Rings is a square
+    /// template centered in that window, so window-center IS artwork-center,
+    /// no geometry to work out by hand. Scribbles first with a DIFFERENT
+    /// crayon (Color 4, "Red" — the ring just outside the bullseye), so any
+    /// ink visible at dead-center after the late fill can only be the
+    /// bullseye's own fill, not a coincidence of matching colors.
+    @MainActor
+    func testLateFillCoversEarlierScribble() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        let card = app.staticTexts["Rings"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Rings card never appeared")
+        card.tap()
+
+        let back = app.staticTexts["Studio"]
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not open")
+
+        // Draw mode, a different crayon than the bullseye's, two short
+        // crossing drags through dead-center — freehand ink lands wherever
+        // the pen goes, no boundary clipping to fight here.
+        app.buttons["Draw mode"].tap()
+        app.buttons["Color 4"].tap()
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)))
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+            .press(forDuration: 0.1, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)))
+        attachScreenshot(of: app, named: "cover-1-scribbled")
+
+        // Tap mode, the bullseye's own crayon, dead-center: this fill
+        // happens AFTER the scribble above, so it must render on top of it
+        // inside the bullseye (the scribble stays visible OUTSIDE the
+        // bullseye, where it was never re-filled — that part is correct,
+        // unchanged behavior).
+        app.buttons["Tap mode"].tap()
+        app.buttons["Color 5"].tap()
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        attachScreenshot(of: app, named: "cover-2-late-fill")
+
+        // Continuous autosave must cover the chronological repaint exactly
+        // like it covers every other action: kill outright, relaunch,
+        // reopen — the late fill must still be on top after restore.
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio missing after relaunch")
+        card.tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not reopen")
+        attachScreenshot(of: app, named: "cover-3-after-relaunch")
+    }
+
     @MainActor
     private func attachScreenshot(of app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
