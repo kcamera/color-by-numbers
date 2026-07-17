@@ -479,7 +479,11 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     let item = try library.add(sampleTemplate(title: "Replayed"))
     let seeded = try library.latestAttempt(in: item.id)!
 
-    let now = Date()
+    // Strictly after the seeded attempt's whole-second timestamp — landing
+    // "middle" in the seeded attempt's encoded second would tie createdAt
+    // AND updatedAt, pushing the comparison down to the id tie-break, which
+    // is deterministic but not what this test is about.
+    let now = Date().addingTimeInterval(5)
     let middle = CBNAttempt(id: "middle", createdAt: now, updatedAt: now)
     let newest = CBNAttempt(
         id: "newest",

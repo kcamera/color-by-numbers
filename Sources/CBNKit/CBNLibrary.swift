@@ -264,7 +264,12 @@ public struct CBNLibrary: Sendable {
         }
         return attempts.sorted { lhs, rhs in
             if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
-            return lhs.updatedAt > rhs.updatedAt
+            if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+            // Same full tie-break ladder as `latestAttempt`: whole-second
+            // encoding makes double-date ties a fact of life, and Swift's
+            // sort is not stable — without a total order the Workshop's
+            // attempt list could reshuffle between two reads.
+            return lhs.id > rhs.id
         }
     }
 
