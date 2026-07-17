@@ -122,6 +122,29 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
         self.drawingData = drawingData
     }
 
+    /// Builds a fresh attempt carrying another attempt's coloring history
+    /// verbatim — `CBNLibrary.restoreAttempt`'s building block for "bring an
+    /// archived attempt back as the current one" (M4 Workshop). A new id and
+    /// caller-supplied timestamps (restoring makes a NEW current attempt;
+    /// `source` — the archived one — is untouched and stays exactly where it
+    /// was), but `filledRegionIDs`, `drawingData`, and the full `actionLog`
+    /// all copy across as-is. The log copies `effectiveActionLog`, not the
+    /// raw stored one, and copies it directly rather than replaying it
+    /// through `fill`/`recordStroke`: a restored freehand/boundary-assist
+    /// attempt must keep its real gesture history (including pre-log
+    /// attempts' reconstructed one), not a flattened all-fills stand-in, and
+    /// this initializer lives in the same file as `actionLog`'s
+    /// `private(set)` precisely so it's the one place allowed to assign it
+    /// wholesale instead of appending to it.
+    init(restoring source: CBNAttempt, id: String = UUID().uuidString, createdAt: Date, updatedAt: Date) {
+        self.id = id
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.filledRegionIDs = source.filledRegionIDs
+        self.drawingData = source.drawingData
+        self.actionLog = source.effectiveActionLog
+    }
+
     /// `actionLog` if this attempt has one yet, else the correct
     /// reconstruction for a pre-log attempt: one `.fill` per entry of
     /// `filledRegionIDs`, in the same order — the only action a pre-log

@@ -632,3 +632,126 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     #expect(items.count == 1)
     #expect(items[0].template.title == "Real")
 }
+
+// MARK: - CBNLibrary management APIs (M4 Workshop verbs)
+
+@Test func libraryDeleteItemRemovesItemDirectory() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let kept = try library.add(sampleTemplate(title: "Keep"))
+    let doomed = try library.add(sampleTemplate(title: "Doomed"))
+    let doomedDirectory = root.appendingPathComponent(doomed.id, isDirectory: true)
+    #expect(FileManager.default.fileExists(atPath: doomedDirectory.path))
+
+    try library.deleteItem(doomed.id)
+
+    #expect(!FileManager.default.fileExists(atPath: doomedDirectory.path))
+    let remaining = try library.items()
+    #expect(remaining.map(\.id) == [kept.id])
+}
+
+/// Housekeeping idempotency (DESIGN.md keeps destruction out of kid space,
+/// but even in the Workshop a double-tap or a stale list must never throw).
+@Test func libraryDeleteItemOnMissingItemIsANoOp() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try library.deleteItem("never-existed")
+}
+
+@Test func libraryRenameItemRoundTripsThroughItems() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Old Name"))
+    try library.renameItem(item.id, title: "New Name")
+
+    let items = try library.items()
+    #expect(items.count == 1)
+    #expect(items[0].id == item.id)
+    #expect(items[0].template.title == "New Name")
+    // Everything else about the template is untouched by a rename.
+    #expect(items[0].template.regions == item.template.regions)
+    #expect(items[0].template.palette == item.template.palette)
+}
+
+@Test func libraryRenameItemOnMissingItemThrows() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    #expect(throws: (any Error).self) {
+        try library.renameItem("never-existed", title: "Anything")
+    }
+}
+
+@Test func libraryDeleteAttemptRefusesToDeleteTheLatestAttempt() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Live Work"))
+    let seeded = try library.latestAttempt(in: item.id)!
+
+    #expect(throws: CBNLibraryError.cannotDeleteLatestAttempt(attemptID: seeded.id, itemID: item.id)) {
+        try library.deleteAttempt(seeded.id, in: item.id)
+    }
+    // The refusal must not have removed anything.
+    #expect(try library.attempts(in: item.id).count == 1)
+}
+
+@Test func libraryDeleteAttemptRemovesAnArchivedAttempt() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Archive Me"))
+    var toArchive = try library.latestAttempt(in: item.id)!
+    toArchive.fill("r0")
+    try library.saveAttempt(toArchive, in: item.id)
+    let fresh = try library.newAttempt(in: item.id) // archives `toArchive`
+
+    #expect(try library.attempts(in: item.id).map(\.id).sorted() == [toArchive.id, fresh.id].sorted())
+
+    try library.deleteAttempt(toArchive.id, in: item.id)
+
+    let remaining = try library.attempts(in: item.id)
+    #expect(remaining.map(\.id) == [fresh.id])
+}
+
+@Test func libraryDeleteAttemptOnMissingAttemptIsANoOp() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Solo"))
+    try library.deleteAttempt("never-existed", in: item.id)
+    #expect(try library.attempts(in: item.id).count == 1)
+}
+
+/// The Workshop's "restore": an archived attempt comes back as a brand-new
+/// CURRENT attempt with the same coloring content, while the archived
+/// source is left exactly where it was (restoring is additive, not a move).
+@Test func libraryRestoreAttemptBecomesLatestWithContentIntactAndSourceStillPresent() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Restore Me"))
+    var archived = try library.latestAttempt(in: item.id)!
+    archived.fill("r0")
+    archived.recordStroke(Data([0xAB, 0xCD]))
+    try library.saveAttempt(archived, in: item.id)
+    try library.newAttempt(in: item.id) // archives `archived`, current becomes pristine
+
+    let restored = try library.restoreAttempt(archived.id, in: item.id)
+
+    // A genuinely new attempt, not the archived one reused.
+    #expect(restored.id != archived.id)
+    // Content copied verbatim.
+    #expect(restored.filledRegionIDs == archived.filledRegionIDs)
+    #expect(restored.drawingData == archived.drawingData)
+    #expect(restored.effectiveActionLog == archived.effectiveActionLog)
+    // It's the new current attempt.
+    #expect(try library.latestAttempt(in: item.id)?.id == restored.id)
+    // The archived source is untouched and still on disk.
+    let all = try library.attempts(in: item.id)
+    let stillArchived = all.first { $0.id == archived.id }
+    #expect(stillArchived?.filledRegionIDs == archived.filledRegionIDs)
+}

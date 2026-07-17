@@ -1,5 +1,23 @@
 import Foundation
 
+/// Errors specific to `CBNLibrary`'s parent-zone management operations (the
+/// M4 Workshop's verbs) — distinct from a plain file-system error so a
+/// refusal that's really an invariant guard (not a device I/O problem) reads
+/// as one in logs and, eventually, Workshop UI copy.
+public enum CBNLibraryError: Error, CustomStringConvertible, Equatable {
+    /// `deleteAttempt` refuses to delete an item's CURRENT attempt: it's the
+    /// child's live work, not an archived one, and the invariant "every item
+    /// has ≥1 attempt" must survive every Workshop action.
+    case cannotDeleteLatestAttempt(attemptID: String, itemID: String)
+
+    public var description: String {
+        switch self {
+        case .cannotDeleteLatestAttempt(let attemptID, let itemID):
+            "cannot delete attempt \(attemptID) in item \(itemID): it is the current attempt, not an archived one"
+        }
+    }
+}
+
 /// A template plus its library metadata, as returned by `CBNLibrary.items()`
 /// — what the Studio grid actually renders.
 public struct CBNLibraryItem: Codable, Equatable, Sendable, Identifiable {
@@ -151,6 +169,38 @@ public struct CBNLibrary: Sendable {
         return results.sorted { $0.addedAt > $1.addedAt }
     }
 
+    /// Deletes an item and everything under it (template, meta, every
+    /// attempt) — the Workshop's item-level "remove from library" (DESIGN.md
+    /// keeps this out of kid space entirely; it's parent-gate-only by
+    /// construction, since nothing in CBNKit's Studio-facing API can reach
+    /// it). Deleting an item that's already gone is a no-op: idempotent
+    /// housekeeping, not a meaningful failure, matching `ensureRoot`'s
+    /// "safe to call unconditionally" spirit — the Workshop shouldn't have
+    /// to special-case a double-tap or a stale list.
+    public func deleteItem(_ itemID: String) throws {
+        let directory = itemDirectory(itemID)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    /// Renames an item in place: decode template.json, change `title`,
+    /// atomic rewrite — the Workshop's per-item "rename" (DESIGN.md keeps
+    /// this out of kid space). `title` is the one field of an otherwise-fixed
+    /// template the Workshop is allowed to touch after import (see
+    /// `CBNTemplate`'s doc comment); everything a child's in-progress attempt
+    /// depends on — regions, palette, geometry — stays untouched. A missing
+    /// or malformed template.json throws (a real problem, not a per-item
+    /// quirk to swallow) rather than silently no-op'ing, unlike `deleteItem`:
+    /// renaming something that isn't there has no sensible interpretation.
+    public func renameItem(_ itemID: String, title: String) throws {
+        let decoder = Self.makeDecoder()
+        let data = try Data(contentsOf: templateURL(itemID))
+        var template = try decoder.decode(CBNTemplate.self, from: data)
+        template.title = title
+        let encoded = try Self.makeEncoder().encode(template)
+        try encoded.write(to: templateURL(itemID), options: .atomic)
+    }
+
     // MARK: - Attempts
 
     /// Writes `attempt` atomically — this is the continuous-autosave path
@@ -243,35 +293,91 @@ public struct CBNLibrary: Sendable {
     /// whole-second, see `makeEncoder` — its timestamp is bumped strictly
     /// past it (the `seedIfEmpty` synthetic-offset technique), which is
     /// what makes `latestAttempt(in:)` unambiguously return it afterward.
+    /// See `timestampStrictlyAfter` for the mechanics, shared with
+    /// `restoreAttempt` — both mint a fresh attempt that must sort
+    /// unambiguously latest.
     @discardableResult
     public func newAttempt(in itemID: String) throws -> CBNAttempt {
         let previous = try latestAttempt(in: itemID)
         if let previous, previous.isPristine {
             return previous
         }
-        // Floor to ENCODED resolution before comparing: `previous` came off
-        // disk with whole-second dates, while `Date()` carries a fraction
-        // that `.iso8601` silently truncates on save. Compared raw,
-        // 12:00:01.7 reads as "later" than a decoded 12:00:01, no bump
-        // happens, and encoding then lands both attempts tied at 12:00:01 —
-        // leaving `latestAttempt` to break the tie by directory iteration
-        // order. Flooring first makes the same-second case detectable, and
-        // makes the returned in-memory attempt identical to its on-disk form.
-        var timestamp = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
-        if let previous, timestamp <= previous.updatedAt {
-            timestamp = previous.updatedAt.addingTimeInterval(1)
-        }
+        let timestamp = Self.timestampStrictlyAfter(previous)
         let attempt = CBNAttempt(createdAt: timestamp, updatedAt: timestamp)
         try saveAttempt(attempt, in: itemID)
         pruneArchivedAttempts(in: itemID, keepingCurrent: attempt.id)
         return attempt
     }
 
-    /// Ring-buffer housekeeping for `newAttempt`: keeps the current attempt
-    /// plus the newest `archivedAttemptCap` non-empty prior ones; everything
-    /// older — and any pristine stray — is removed. Best-effort by design:
-    /// a pruning hiccup is never worth failing a child's "color it again"
-    /// over, so errors are swallowed and the next reset gets another go.
+    /// A whole-second "now", bumped strictly past `previous`'s `updatedAt`
+    /// if it would otherwise land in the same encoded wall-clock second —
+    /// the mechanics `newAttempt` and `restoreAttempt` both need: each mints
+    /// a fresh attempt that must sort unambiguously latest via
+    /// `latestAttempt(in:)`, and a same-second tie would otherwise fall
+    /// through to that function's arbitrary-but-deterministic final
+    /// tie-break (lexicographic id).
+    ///
+    /// Floors to ENCODED resolution before comparing: `previous` came off
+    /// disk with whole-second dates, while `Date()` carries a fraction that
+    /// `.iso8601` silently truncates on save. Compared raw, 12:00:01.7 reads
+    /// as "later" than a decoded 12:00:01, no bump happens, and encoding
+    /// then lands both attempts tied at 12:00:01. Flooring first makes the
+    /// same-second case detectable, and makes the returned in-memory
+    /// timestamp identical to its on-disk form.
+    private static func timestampStrictlyAfter(_ previous: CBNAttempt?) -> Date {
+        var timestamp = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+        if let previous, timestamp <= previous.updatedAt {
+            timestamp = previous.updatedAt.addingTimeInterval(1)
+        }
+        return timestamp
+    }
+
+    /// Prunes ONE archived attempt — the Workshop's per-attempt housekeeping
+    /// (DESIGN.md keeps this out of kid space). Refuses to delete the item's
+    /// CURRENT latest attempt: that's the child's live work, not an archived
+    /// one, and "every item has ≥1 attempt" must survive every Workshop
+    /// action (see `CBNLibraryError.cannotDeleteLatestAttempt`). Deleting an
+    /// attempt that's already gone (or never existed) is a no-op, matching
+    /// `deleteItem`'s and `pruneArchivedAttempts`' housekeeping idempotency —
+    /// only the "is this the live one" refusal is a real error.
+    public func deleteAttempt(_ attemptID: String, in itemID: String) throws {
+        if let latest = try latestAttempt(in: itemID), latest.id == attemptID {
+            throw CBNLibraryError.cannotDeleteLatestAttempt(attemptID: attemptID, itemID: itemID)
+        }
+        let url = attemptURL(attemptID, in: itemID)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+
+    /// Brings an archived attempt back as the CURRENT one — the Workshop's
+    /// "restore" (DESIGN.md: the M3 ring buffer "the Workshop (M4) can
+    /// restore or prune what the ring holds"). Creates a NEW attempt (fresh
+    /// id, timestamped strictly latest via `timestampStrictlyAfter`, same
+    /// mechanics `newAttempt` uses) carrying `attemptID`'s coloring history
+    /// verbatim — see `CBNAttempt.init(restoring:id:createdAt:updatedAt:)`.
+    /// The archived source is left exactly where it was: restoring is
+    /// additive, not a move, so restoring twice (or restoring, then
+    /// resetting, then restoring again) never loses anything. Ring pruning
+    /// applies afterward exactly as it does after `newAttempt`, since this
+    /// is exactly that — a new current attempt superseding the old one.
+    @discardableResult
+    public func restoreAttempt(_ attemptID: String, in itemID: String) throws -> CBNAttempt {
+        let data = try Data(contentsOf: attemptURL(attemptID, in: itemID))
+        let archived = try Self.makeDecoder().decode(CBNAttempt.self, from: data)
+
+        let timestamp = Self.timestampStrictlyAfter(try latestAttempt(in: itemID))
+        let restored = CBNAttempt(restoring: archived, createdAt: timestamp, updatedAt: timestamp)
+        try saveAttempt(restored, in: itemID)
+        pruneArchivedAttempts(in: itemID, keepingCurrent: restored.id)
+        return restored
+    }
+
+    /// Ring-buffer housekeeping shared by `newAttempt` and `restoreAttempt`:
+    /// keeps the current attempt plus the newest `archivedAttemptCap`
+    /// non-empty prior ones; everything older — and any pristine stray — is
+    /// removed. Best-effort by design: a pruning hiccup is never worth
+    /// failing a child's "color it again" (or a parent's "restore") over, so
+    /// errors are swallowed and the next reset gets another go.
     private func pruneArchivedAttempts(in itemID: String, keepingCurrent currentID: String) {
         guard let all = try? attempts(in: itemID) else { return }
         var keptNonPristine = 0
