@@ -785,6 +785,25 @@ private struct DrawingCanvas: UIViewRepresentable {
     let inkWidth: CGFloat
     let onGesture: ([PKStroke]) -> Void
 
+    /// PencilKit registers an ink color as a light/dark appearance PAIR,
+    /// derived from the trait collection current at CREATION, then renders
+    /// whichever half matches the canvas's traits. If creation happens
+    /// under dark or unspecified traits — which UIViewRepresentable
+    /// callbacks can hit on a real device before the view joins a window —
+    /// the palette color registers as the DARK variant and PencilKit paints
+    /// its lightness-FLIPPED light counterpart: pale crayons drew olive and
+    /// near-black ink on the real iPad (M3 gate find). Pinning creation to
+    /// an explicit light trait makes "the color she picked" the variant
+    /// that paints, always; the app is also forced light app-wide
+    /// (Info.plist), so no renderer ever asks for the dark half.
+    private func makeTool() -> PKInkingTool {
+        var tool = PKInkingTool(DrawingFeel.inkType)
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: inkWidth)
+        }
+        return tool
+    }
+
     func makeUIView(context: Context) -> PKCanvasView {
         let view = PKCanvasView()
         // Finger/Pencil parity (DESIGN.md) — no separate finger-drawing
@@ -795,7 +814,7 @@ private struct DrawingCanvas: UIViewRepresentable {
         // No ruler, no stock tool picker — the only tool offered is the
         // held crayon, applied below.
         view.isRulerActive = false
-        view.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: inkWidth)
+        view.tool = makeTool()
         view.isUserInteractionEnabled = isActive
         view.delegate = context.coordinator
         return view
@@ -803,7 +822,7 @@ private struct DrawingCanvas: UIViewRepresentable {
 
     func updateUIView(_ uiView: PKCanvasView, context: Context) {
         uiView.isUserInteractionEnabled = isActive
-        uiView.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: inkWidth)
+        uiView.tool = makeTool()
         // The gesture handler captures mode/crayon/fit from the CURRENT
         // body evaluation — refresh it every update, or the coordinator
         // would clip tomorrow's strokes with yesterday's crayon.

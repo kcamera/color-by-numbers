@@ -43,6 +43,12 @@ targets:
         # Landscape only + full screen: one layout, no Split View/Stage
         # Manager, Pencil home is always the top edge. Locked design decision.
         UIRequiresFullScreen: true
+        # Always light: the desk/paper aesthetic is inherently light
+        # (DESIGN.md), and PencilKit derives light/dark ink-color pairs
+        # from ambient traits — a dark trait anywhere in that pipeline
+        # renders lightness-FLIPPED ink (pale crayons became olive/black
+        # on the real iPad, M3 gate). One appearance, no pairs to flip.
+        UIUserInterfaceStyle: Light
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight

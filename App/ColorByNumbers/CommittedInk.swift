@@ -85,7 +85,14 @@ enum CommittedInkRenderer {
                 let slice = Array(strokes[cursor ..< min(cursor + count, strokes.count)])
                 cursor += count
 
-                let gestureImage = PKDrawing(strokes: slice).image(from: templateRect, scale: scale)
+                // Pin light traits: PKDrawing.image resolves each ink's
+                // light/dark color pair against the CURRENT traits, and
+                // this renderer can run under unspecified ones — same
+                // trait-pinning rationale as DrawingCanvas.makeTool.
+                var gestureImage = UIImage()
+                UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+                    gestureImage = PKDrawing(strokes: slice).image(from: templateRect, scale: scale)
+                }
 
                 guard case .clippedStrokes = entry,
                       let number = paletteNumber(closestTo: slice.first?.ink.color, in: template)
