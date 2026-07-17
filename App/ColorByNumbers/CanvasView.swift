@@ -422,7 +422,8 @@ struct CanvasView: View {
                     // fills and committed ink, below every control layer.
                     DrawingCanvas(
                         isActive: mode != .tapFill,
-                        inkColor: paletteColor(for: selectedColorNumber, in: template)
+                        inkColor: paletteColor(for: selectedColorNumber, in: template),
+                        inkWidth: DrawingFeel.width(for: mode)
                     ) { gestureStrokes in
                         let landed: [PKStroke]
                         if mode == .boundaryAssist {
@@ -756,7 +757,15 @@ private enum DrawingFeel {
     /// as a chisel tip whose width varies with stroke direction, which read
     /// as "calligraphy" rather than a kid's crayon line.
     static let inkType: PKInkingTool.InkType = .monoline
-    static let width: CGFloat = 10
+
+    /// Per-mode width (Kevin's gate feedback, second round): freehand is
+    /// line DRAWING, where a finer tip is easier to control; boundary-
+    /// assist is coloring-in, where a broader crayon fills faster and the
+    /// clip guards the edges anyway. A parent-adjustable width belongs in
+    /// the Workshop (M4+) — these are the defaults it will start from.
+    static func width(for mode: CanvasMode) -> CGFloat {
+        mode == .freehand ? 6 : 10
+    }
 }
 
 /// PencilKit's real canvas, wrapped for SwiftUI — but deliberately holding
@@ -773,6 +782,7 @@ private struct DrawingCanvas: UIViewRepresentable {
     /// occluded once this becomes interactive.
     let isActive: Bool
     let inkColor: Color
+    let inkWidth: CGFloat
     let onGesture: ([PKStroke]) -> Void
 
     func makeUIView(context: Context) -> PKCanvasView {
@@ -785,7 +795,7 @@ private struct DrawingCanvas: UIViewRepresentable {
         // No ruler, no stock tool picker — the only tool offered is the
         // held crayon, applied below.
         view.isRulerActive = false
-        view.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: DrawingFeel.width)
+        view.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: inkWidth)
         view.isUserInteractionEnabled = isActive
         view.delegate = context.coordinator
         return view
@@ -793,7 +803,7 @@ private struct DrawingCanvas: UIViewRepresentable {
 
     func updateUIView(_ uiView: PKCanvasView, context: Context) {
         uiView.isUserInteractionEnabled = isActive
-        uiView.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: DrawingFeel.width)
+        uiView.tool = PKInkingTool(DrawingFeel.inkType, color: UIColor(inkColor), width: inkWidth)
         // The gesture handler captures mode/crayon/fit from the CURRENT
         // body evaluation — refresh it every update, or the coordinator
         // would clip tomorrow's strokes with yesterday's crayon.
