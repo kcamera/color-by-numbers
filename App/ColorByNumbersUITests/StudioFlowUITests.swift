@@ -213,9 +213,21 @@ final class StudioFlowUITests: XCTestCase {
         start.press(forDuration: 0.1, thenDragTo: end)
         attachScreenshot(of: app, named: "boundary-1-clipped-stroke")
 
+        // The per-stroke ink mask (allowedInkMask) must survive
+        // serialization: kill outright, relaunch, reopen — the clipped
+        // stroke must come back still pixel-clipped, no bloom past the
+        // outlines. This is the checkpoint that would catch PencilKit
+        // dropping PKStroke.mask on a data round trip.
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio missing after relaunch")
+        card.tap()
+        XCTAssertTrue(app.staticTexts["Studio"].waitForExistence(timeout: 10), "Canvas did not reopen")
+        attachScreenshot(of: app, named: "boundary-2-after-relaunch")
+
         // One Undo, whole gesture: every sub-stroke disappears together.
         app.buttons["Undo"].tap()
-        attachScreenshot(of: app, named: "boundary-2-after-undo")
+        attachScreenshot(of: app, named: "boundary-3-after-undo")
     }
 
     /// M3's "Color it again" (DESIGN.md, amended): to the child it's a

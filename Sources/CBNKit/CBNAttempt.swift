@@ -12,6 +12,11 @@ import Foundation
 public enum CBNAttemptAction: Codable, Equatable, Sendable {
     case fill
     case strokes(Int)
+    /// A boundary-assist gesture: its sub-strokes were clipped to the held
+    /// crayon's regions, and RENDERERS must clip its paint the same way
+    /// (the center-line clip alone lets half the ink width bloom past the
+    /// outline — the renderer needs to know which stroke slices to mask).
+    case clippedStrokes(Int)
 
     /// The common single-sub-stroke gesture, and the decoded form of the
     /// legacy `"stroke"` string.
@@ -25,13 +30,16 @@ public enum CBNAttemptAction: Codable, Equatable, Sendable {
         case "stroke":
             self = .strokes(1)
         default:
-            guard raw.hasPrefix("strokes:"), let count = Int(raw.dropFirst("strokes:".count)), count > 0 else {
+            if raw.hasPrefix("strokes:"), let count = Int(raw.dropFirst("strokes:".count)), count > 0 {
+                self = .strokes(count)
+            } else if raw.hasPrefix("clipped:"), let count = Int(raw.dropFirst("clipped:".count)), count > 0 {
+                self = .clippedStrokes(count)
+            } else {
                 throw DecodingError.dataCorrupted(.init(
                     codingPath: decoder.codingPath,
                     debugDescription: "Unrecognized attempt action '\(raw)'"
                 ))
             }
-            self = .strokes(count)
         }
     }
 
@@ -43,6 +51,16 @@ public enum CBNAttemptAction: Codable, Equatable, Sendable {
         // attempt's JSON is byte-identical to what early M3 already wrote.
         case .strokes(1): try container.encode("stroke")
         case .strokes(let count): try container.encode("strokes:\(count)")
+        case .clippedStrokes(let count): try container.encode("clipped:\(count)")
+        }
+    }
+
+    /// How many `PKStroke`s this gesture spans in the drawing, regardless
+    /// of kind — what undo and the committed-ink renderer both walk by.
+    public var substrokeCount: Int? {
+        switch self {
+        case .fill: nil
+        case .strokes(let count), .clippedStrokes(let count): count
         }
     }
 
@@ -51,8 +69,7 @@ public enum CBNAttemptAction: Codable, Equatable, Sendable {
     /// about (`== .stroke` would wrongly reject a clipped multi-sub-stroke
     /// gesture).
     public var isStrokeGesture: Bool {
-        if case .strokes = self { return true }
-        return false
+        substrokeCount != nil
     }
 }
 
@@ -166,10 +183,13 @@ public struct CBNAttempt: Codable, Equatable, Sendable, Identifiable {
     /// completed gesture. `substrokes` is how many `PKStroke`s the gesture
     /// baked into (1 for freehand; boundary-assist clipping can split one
     /// gesture into several), so undo knows how many to remove together.
-    public mutating func recordStroke(_ data: Data, substrokes: Int = 1) {
+    /// `clipped` marks a boundary-assist gesture, so renderers know to mask
+    /// that stroke slice's PAINT to the crayon's regions (see
+    /// `CBNAttemptAction.clippedStrokes`).
+    public mutating func recordStroke(_ data: Data, substrokes: Int = 1, clipped: Bool = false) {
         materializeActionLogIfNeeded()
         drawingData = data
-        actionLog?.append(.strokes(substrokes))
+        actionLog?.append(clipped ? .clippedStrokes(substrokes) : .strokes(substrokes))
         updatedAt = max(Date(), updatedAt)
     }
 

@@ -144,10 +144,10 @@ final class CanvasModel {
     /// mask already showed no ink, so nothing appears and nothing is
     /// logged. Mirrors `tap`'s save-through contract (DESIGN.md's
     /// continuous autosave).
-    func gestureCompleted(landing landed: [PKStroke]) {
+    func gestureCompleted(landing landed: [PKStroke], clipped: Bool) {
         guard !landed.isEmpty else { return }
         drawing = PKDrawing(strokes: drawing.strokes + landed)
-        attempt.recordStroke(drawing.dataRepresentation(), substrokes: landed.count)
+        attempt.recordStroke(drawing.dataRepresentation(), substrokes: landed.count, clipped: clipped)
         save()
     }
 
@@ -164,7 +164,7 @@ final class CanvasModel {
         case .fill:
             attempt.undoLastFill()
             save()
-        case .strokes(let count):
+        case .strokes(let count), .clippedStrokes(let count):
             var strokes = drawing.strokes
             strokes.removeLast(min(count, strokes.count))
             let updated = PKDrawing(strokes: strokes)
@@ -319,21 +319,18 @@ private struct FitTransform {
         CBNPoint(x: (point.x - origin.x) / scale, y: (point.y - origin.y) / scale)
     }
 
-    /// The same mappings as affine transforms, for whole-PKDrawing
-    /// conversion. Strokes PERSIST in template space — the document's own
-    /// coordinate system, like every region path — never in view points:
-    /// view space is an accident of one session's canvas size, and a
-    /// drawing saved in it would silently misregister on any other size
-    /// (a different iPad, a future layout tweak) and couldn't be composited
-    /// into Studio thumbnails at all.
+    /// The view→template mapping as an affine transform, for whole-
+    /// PKDrawing conversion at gesture end. Strokes PERSIST in template
+    /// space — the document's own coordinate system, like every region
+    /// path — never in view points: view space is an accident of one
+    /// session's canvas size, and a drawing saved in it would silently
+    /// misregister on any other size (a different iPad, a future layout
+    /// tweak) and couldn't be composited into Studio thumbnails at all.
+    /// (Display goes the other way by RENDERING in template space and
+    /// letting SwiftUI size the bitmap — see the committed-ink layer.)
     var viewToTemplateTransform: CGAffineTransform {
         CGAffineTransform(translationX: -origin.x, y: -origin.y)
             .concatenating(CGAffineTransform(scaleX: 1 / scale, y: 1 / scale))
-    }
-
-    var templateToViewTransform: CGAffineTransform {
-        CGAffineTransform(scaleX: scale, y: scale)
-            .concatenating(CGAffineTransform(translationX: origin.x, y: origin.y))
     }
 }
 
@@ -356,6 +353,7 @@ struct CanvasView: View {
         let template = model.template
         let filledIDs = Set(model.attempt.filledRegionIDs)
         let drawing = model.drawing
+        let actionLog = model.attempt.effectiveActionLog
         let mode = model.mode
         let selectedColorNumber = model.selectedColorNumber
         // M3: the log, not the fill count, is what Undo dims on — an
@@ -397,14 +395,25 @@ struct CanvasView: View {
                     // earlier with a DIFFERENT crayon — those were clipped
                     // at the data level when their gesture ended, and render
                     // here mask-free.
-                    if !drawing.strokes.isEmpty {
-                        // Committed strokes live in TEMPLATE space (see
-                        // FitTransform.viewToTemplateTransform); map them
-                        // into this session's view space to draw.
-                        Image(uiImage: drawing
-                            .transformed(using: fit.templateToViewTransform)
-                            .image(from: pageRect, scale: displayScale))
-                            .frame(width: pageRect.width, height: pageRect.height)
+                    // Rendered in template space by the shared renderer
+                    // (which is what enforces boundary-assist's pixel
+                    // promise on committed ink), then framed to the
+                    // artwork's on-screen size — the ZStack centers it,
+                    // and the fit transform centers the artwork, so the
+                    // two agree by construction.
+                    if let ink = CommittedInkRenderer.image(
+                        drawing: drawing,
+                        actionLog: actionLog,
+                        template: template,
+                        scale: fit.scale,
+                        screenScale: displayScale
+                    ) {
+                        Image(uiImage: ink)
+                            .resizable()
+                            .frame(
+                                width: template.size.width * fit.scale,
+                                height: template.size.height * fit.scale
+                            )
                             .allowsHitTesting(false)
                     }
 
@@ -433,11 +442,15 @@ struct CanvasView: View {
                         }
                         // Persist in template space, the document's own
                         // coordinate system — view points are an accident
-                        // of this session's canvas size.
+                        // of this session's canvas size. `clipped` rides
+                        // into the action log so renderers know to mask
+                        // this gesture's PAINT, not just its center line
+                        // (CommittedInkRenderer — the ink-width bloom fix).
                         model.gestureCompleted(
                             landing: PKDrawing(strokes: landed)
                                 .transformed(using: fit.viewToTemplateTransform)
-                                .strokes
+                                .strokes,
+                            clipped: mode == .boundaryAssist
                         )
                     }
                     .mask {

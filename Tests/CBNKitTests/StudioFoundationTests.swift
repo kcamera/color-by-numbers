@@ -243,11 +243,14 @@ private let v1AttemptJSON = """
 /// freehand-only attempts stay byte-identical.
 @Test func attemptActionStringsRoundTripAllThreeSpellings() throws {
     let decoder = JSONDecoder()
-    let decoded = try decoder.decode([CBNAttemptAction].self, from: Data(#"["fill","stroke","strokes:4"]"#.utf8))
-    #expect(decoded == [.fill, .strokes(1), .strokes(4)])
+    let decoded = try decoder.decode(
+        [CBNAttemptAction].self,
+        from: Data(#"["fill","stroke","strokes:4","clipped:3"]"#.utf8)
+    )
+    #expect(decoded == [.fill, .strokes(1), .strokes(4), .clippedStrokes(3)])
 
     let encoded = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
-    #expect(encoded == #"["fill","stroke","strokes:4"]"#)
+    #expect(encoded == #"["fill","stroke","strokes:4","clipped:3"]"#)
 
     #expect(throws: DecodingError.self) {
         _ = try decoder.decode([CBNAttemptAction].self, from: Data(#"["strokes:0"]"#.utf8))
@@ -264,8 +267,10 @@ private let v1AttemptJSON = """
 @Test func attemptMultiSubstrokeGestureLogsOnceAndUndoesOnce() {
     var attempt = CBNAttempt()
     attempt.fill("r0")
-    attempt.recordStroke(Data([0x01]), substrokes: 3)
-    #expect(attempt.effectiveActionLog == [.fill, .strokes(3)])
+    attempt.recordStroke(Data([0x01]), substrokes: 3, clipped: true)
+    #expect(attempt.effectiveActionLog == [.fill, .clippedStrokes(3)])
+    #expect(attempt.effectiveActionLog.last?.substrokeCount == 3)
+    #expect(attempt.effectiveActionLog.last?.isStrokeGesture == true)
 
     attempt.undoLastStroke(updatedDrawing: nil)
     #expect(attempt.effectiveActionLog == [.fill])

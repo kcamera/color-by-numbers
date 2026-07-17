@@ -123,17 +123,21 @@ struct StudioView: View {
 
         guard let data = attempt?.drawingData,
               let drawing = try? PKDrawing(data: data),
-              !drawing.strokes.isEmpty
+              // The shared renderer applies boundary-assist's paint clip
+              // per gesture (CommittedInkRenderer) — the thumbnail must
+              // show exactly what the canvas shows, bloom included-out.
+              let strokesImage = CommittedInkRenderer.image(
+                  drawing: drawing,
+                  actionLog: attempt?.effectiveActionLog ?? [],
+                  template: item.template,
+                  scale: scale
+              )
         else {
             thumbnails[key] = Image(decorative: cgImage, scale: 1)
             return
         }
 
         let pixelSize = CGSize(width: cgImage.width, height: cgImage.height)
-        let strokesImage = drawing.image(
-            from: CGRect(x: 0, y: 0, width: item.template.size.width, height: item.template.size.height),
-            scale: scale
-        )
 
         // Compositing with UIKit's own `draw(in:)`, never the raw
         // CGContext `draw(_:in:)`: both source images (TemplateRenderer's
