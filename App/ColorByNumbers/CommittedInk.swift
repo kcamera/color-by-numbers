@@ -251,3 +251,59 @@ enum CommittedInkRenderer {
         return best?.number
     }
 }
+
+/// The one honest-thumbnail recipe, shared by every card and row that shows
+/// "what this attempt currently looks like" — `TemplateRenderer`'s
+/// outline+fills bitmap, with the attempt's committed ink composited on top
+/// via `CommittedInkRenderer` exactly as `CanvasView` layers them live.
+/// Extracted from what was originally `StudioView.renderThumbnail` (M2) so
+/// the M4 Workshop's Pictures rows and attempts ring (WorkshopView.swift)
+/// can render archived-attempt thumbnails through the SAME code path rather
+/// than inventing a second, divergent recipe that could quietly drift out
+/// of sync — DESIGN.md's honest-thumbnail rule applies just as much to a
+/// parent reviewing an archived version as it does to the Studio grid.
+@MainActor
+enum ThumbnailRenderer {
+    /// `nil` when the template itself fails to rasterize (should not happen
+    /// for a template already living in the library, but this mirrors
+    /// `StudioView`'s original defensiveness rather than force-unwrapping).
+    /// `attempt` is optional so a not-yet-loaded state can ask for a bare
+    /// outline the same way `StudioView.loadItems` already tolerates a
+    /// missing `latestAttempt`.
+    static func image(template: CBNTemplate, attempt: CBNAttempt?, targetWidth: CGFloat) -> UIImage? {
+        let scale = targetWidth / max(template.size.width, 1)
+        guard let cgImage = TemplateRenderer.render(
+            template, mode: .outline, scale: scale, filledRegionIDs: Set(attempt?.filledRegionIDs ?? [])
+        ) else { return nil }
+
+        guard let data = attempt?.drawingData,
+              let drawing = try? PKDrawing(data: data),
+              // Same bloom-fix renderer as the live canvas — a fills-only
+              // shortcut here would show a drawing-less lie for any attempt
+              // that actually has ink (the M4 spec's explicit requirement
+              // for the attempts ring below).
+              let strokesImage = CommittedInkRenderer.image(
+                  drawing: drawing,
+                  actionLog: attempt?.effectiveActionLog ?? [],
+                  filledRegionIDs: attempt?.filledRegionIDs ?? [],
+                  template: template,
+                  scale: scale
+              )
+        else {
+            return UIImage(cgImage: cgImage)
+        }
+
+        let pixelSize = CGSize(width: cgImage.width, height: cgImage.height)
+        // Same UIKit-`draw(in:)` compositing rationale as the original
+        // `StudioView.renderThumbnail` doc comment: both source images are
+        // top-left-origin, UIKit-convention images, and mixing in the raw
+        // CGContext API here would flip one layer relative to the other.
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
+        return renderer.image { _ in
+            UIImage(cgImage: cgImage).draw(in: CGRect(origin: .zero, size: pixelSize))
+            strokesImage.draw(in: CGRect(origin: .zero, size: pixelSize))
+        }
+    }
+}

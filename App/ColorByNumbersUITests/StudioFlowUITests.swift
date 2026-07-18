@@ -524,6 +524,162 @@ final class StudioFlowUITests: XCTestCase {
         attachScreenshot(of: app, named: "import-3-studio-with-new-card")
     }
 
+    /// M4's Pictures management (WorkshopView.swift's `PicturesSection`):
+    /// rename, restore-from-archive, and remove. Banner is the target
+    /// (nobody else's tests touch it beyond `testDoneBadgeTracksCompletion`,
+    /// and test order within this suite is alphabetical, so that test's
+    /// leftover fill state may already be sitting on Banner by the time
+    /// this one runs) — this drives Banner to a known state itself rather
+    /// than trusting anything left behind: it fills every region fresh (a
+    /// re-tap on an already-filled region, or a tap with the wrong crayon,
+    /// is always a silent no-op, so this is safe regardless of starting
+    /// point), archives that completed attempt with "Color it again,"
+    /// restores it from the Workshop's archive, then renames and finally
+    /// removes the picture — all three verbs, in the order the M4 spec
+    /// walks through them.
+    @MainActor
+    func testLibraryManagementRenameRestoreRemove() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        let card = app.staticTexts["Banner"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Banner card never appeared")
+        card.tap()
+        let back = app.staticTexts["Studio"]
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not open")
+
+        // Fill every region fresh, same 5x3-grid-per-color spray as
+        // `testDoneBadgeTracksCompletion` — safe regardless of whatever a
+        // prior test left behind.
+        let window = app.windows.firstMatch
+        for colorNumber in 1...4 {
+            app.buttons["Color \(colorNumber)"].tap()
+            for dy in [0.25, 0.5, 0.75] {
+                for dx in [0.2, 0.35, 0.5, 0.65, 0.8] {
+                    window.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy)).tap()
+                }
+            }
+        }
+        XCTAssertTrue(app.staticTexts["Done"].waitForExistence(timeout: 5), "Done badge never appeared after filling every region")
+
+        // Archive this completed attempt and reset — `CanvasModel.colorItAgain`,
+        // exactly like `testColorItAgainResetsCanvasAndStudio`, just on Banner.
+        let colorItAgain = app.buttons["Color it again"]
+        XCTAssertTrue(colorItAgain.waitForExistence(timeout: 5), "Color it again button missing on a completed attempt")
+        colorItAgain.tap()
+        XCTAssertFalse(app.staticTexts["Done"].exists, "Done badge should not survive Color it again")
+        attachScreenshot(of: app, named: "library-1-banner-archived")
+
+        // Into the Workshop.
+        back.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio grid did not reappear")
+        try openWorkshop(app)
+        XCTAssertTrue(app.staticTexts["Drawing"].waitForExistence(timeout: 10), "Workshop did not appear after correct gate entry")
+
+        // Pictures: Banner's row now has exactly one archived attempt (the
+        // one just completed and reset above) — "Earlier versions" only
+        // shows once an item has MORE than its current attempt (M4 spec).
+        // Title-suffixed because every item with an archive shows this
+        // control at once (Little Sailboat has one too, from
+        // `testColorItAgainResetsCanvasAndStudio`, which runs first
+        // alphabetically) — plain "Earlier versions" would be ambiguous.
+        let earlierVersions = app.buttons["Earlier versions Banner"]
+        scrollToHittable(earlierVersions, in: app)
+        XCTAssertTrue(earlierVersions.waitForExistence(timeout: 5), "Earlier versions disclosure missing for Banner")
+        attachScreenshot(of: app, named: "library-2-pictures-section")
+        earlierVersions.tap()
+
+        // Bring the just-archived (fully filled) version back as Banner's
+        // current attempt. Title-prefixed match, not an exact label: the
+        // control's own accessibility label also carries the archived
+        // attempt's date, which this test doesn't know in advance.
+        let bringBack = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Bring back Banner'")).firstMatch
+        scrollToHittable(bringBack, in: app)
+        XCTAssertTrue(bringBack.waitForExistence(timeout: 5), "Bring back control missing for Banner's archived attempt")
+        attachScreenshot(of: app, named: "library-3-earlier-versions-expanded")
+        bringBack.tap()
+
+        // Close the Workshop and reopen Banner: a crisp existence check that
+        // the restore actually landed. Banner was filled completely before
+        // the archive, so a successful restore means the Done badge is back
+        // immediately, with no coloring in between — exactly the check the
+        // M4 spec calls for in place of asserting on thumbnail pixels.
+        scrollToTop(app)
+        app.buttons["Close"].firstMatch.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio grid did not reappear after closing the Workshop")
+        card.tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not reopen")
+        XCTAssertTrue(app.staticTexts["Done"].waitForExistence(timeout: 5), "Done badge should reappear after restoring the completed attempt")
+        attachScreenshot(of: app, named: "library-4-banner-restored")
+
+        // Back to the Workshop to rename Banner.
+        back.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio grid did not reappear")
+        try openWorkshop(app)
+        XCTAssertTrue(app.staticTexts["Drawing"].waitForExistence(timeout: 10), "Workshop did not reappear after correct gate entry")
+
+        let renameBanner = app.buttons["Rename Banner"]
+        scrollToHittable(renameBanner, in: app)
+        XCTAssertTrue(renameBanner.waitForExistence(timeout: 5), "Rename control missing for Banner")
+        renameBanner.tap()
+
+        // Pre-filled with the CURRENT title (an edit, not a naming) — select
+        // it with a double-tap (one word, "Banner," so this selects the
+        // whole thing) and type over it, rather than guessing at a cursor
+        // position to backspace from.
+        let renameField = app.textFields["Rename field"]
+        XCTAssertTrue(renameField.waitForExistence(timeout: 5), "Rename field never appeared")
+        XCTAssertEqual(renameField.value as? String, "Banner", "Rename field should be pre-filled with the current title")
+        renameField.tap()
+        renameField.doubleTap()
+        renameField.typeText("Flag")
+
+        let saveRename = app.buttons["Save Banner"]
+        scrollToHittable(saveRename, in: app)
+        XCTAssertTrue(saveRename.exists, "Save control missing after tapping Rename")
+        saveRename.tap()
+        attachScreenshot(of: app, named: "library-5-renamed-to-flag")
+
+        // Close the Workshop; the Studio must reflect the rename via the
+        // existing cover-dismissal reload (StudioView.swift) — nothing
+        // reinvented here.
+        scrollToTop(app)
+        app.buttons["Close"].firstMatch.tap()
+        let flagCard = app.staticTexts["Flag"]
+        XCTAssertTrue(flagCard.waitForExistence(timeout: 10), "Studio card 'Flag' never appeared after renaming Banner")
+        XCTAssertFalse(app.staticTexts["Banner"].exists, "Old title 'Banner' should no longer be in the Studio")
+        attachScreenshot(of: app, named: "library-6-studio-shows-flag")
+
+        // Back into the Workshop to remove "Flag" with its inline confirm —
+        // starters reseed only into an EMPTY library, so removing one here
+        // with other pictures present is permanent (CBNLibrary.seedIfEmpty's
+        // own guard; correct parent-zone behavior, not a bug).
+        try openWorkshop(app)
+        XCTAssertTrue(app.staticTexts["Drawing"].waitForExistence(timeout: 10), "Workshop did not reappear after correct gate entry")
+
+        let removeFlag = app.buttons["Remove Flag"]
+        scrollToHittable(removeFlag, in: app)
+        XCTAssertTrue(removeFlag.waitForExistence(timeout: 5), "Remove control missing for Flag")
+        removeFlag.tap()
+
+        XCTAssertTrue(app.staticTexts["Remove this picture?"].waitForExistence(timeout: 5), "Inline remove confirmation never appeared")
+        attachScreenshot(of: app, named: "library-7-remove-confirm")
+        // Same "Remove Flag" query re-resolves to the CONFIRM button now
+        // that the row swapped state — XCUIElement queries are live, not
+        // snapshots, so re-tapping the same reference is correct here.
+        scrollToHittable(removeFlag, in: app)
+        removeFlag.tap()
+        attachScreenshot(of: app, named: "library-8-flag-removed")
+
+        // Close the Workshop; the card must be gone from the Studio.
+        scrollToTop(app)
+        app.buttons["Close"].firstMatch.tap()
+        XCTAssertFalse(app.staticTexts["Flag"].waitForExistence(timeout: 5), "'Flag' should be gone from the Studio after Remove")
+        attachScreenshot(of: app, named: "library-9-studio-without-flag")
+    }
+
     // MARK: - Shared helpers
 
     private static let wordToDigit: [String: Int] = [
@@ -554,6 +710,34 @@ final class StudioFlowUITests: XCTestCase {
         XCTAssertEqual(dealt.count, 3, "Gate words did not parse to three digits: \(gateWords.label)")
         for digit in dealt {
             app.buttons["\(digit)"].tap()
+        }
+    }
+
+    /// Scrolls the Workshop's `ScrollView` up in small steps until `element`
+    /// is hittable, or gives up after a generous cap. The M4 Pictures
+    /// section is a plain (non-lazy) `VStack`, so every row already EXISTS
+    /// in the tree the moment the section appears — `waitForExistence`
+    /// alone is never the problem here, only on-screen position is, since
+    /// XCUITest never auto-scrolls the way a real finger's assistive scroll
+    /// would for a `.tap()` on something below the fold.
+    @MainActor
+    private func scrollToHittable(_ element: XCUIElement, in app: XCUIApplication, maxSwipes: Int = 12) {
+        var remaining = maxSwipes
+        while element.exists, !element.isHittable, remaining > 0 {
+            app.swipeUp()
+            remaining -= 1
+        }
+    }
+
+    /// Scrolls the Workshop's `ScrollView` back to its top — used before
+    /// tapping the Close control, which can otherwise have scrolled out of
+    /// reach after `scrollToHittable` walked down toward a Pictures row.
+    /// Over-swiping past the top is a harmless bounce, not an error, so no
+    /// hittability check is needed here the way `scrollToHittable` needs one.
+    @MainActor
+    private func scrollToTop(_ app: XCUIApplication, swipes: Int = 12) {
+        for _ in 0..<swipes {
+            app.swipeDown()
         }
     }
 
