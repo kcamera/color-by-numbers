@@ -65,3 +65,14 @@ which looks like a pass but ran NOTHING). `touch` on the file is not
 always enough. Fix: `xcodebuild ... clean` first, then run the suite.
 Always check the "Executed N tests" count matches the number of test
 methods you expect.
+
+## One simulator, one test run
+
+Never start an xcodebuild test run while another may still be running
+against the same simulator — including a background run abandoned by an
+interrupted session. Two runners fight over the app: tests die with
+"Restarting after unexpected exit, crash, or test timeout" on arbitrary
+tests, with NO crash report anywhere (the app never crashed — the other
+runner killed it). Before any suite run: `ps aux | grep xcodebuild` and
+kill strays. If tests "crash" with no .ips file in
+~/Library/Logs/DiagnosticReports, suspect this first.
