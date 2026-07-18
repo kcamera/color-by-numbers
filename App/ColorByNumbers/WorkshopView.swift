@@ -490,12 +490,16 @@ private func storedWidth(forKey key: String, fallback: CGFloat) -> CGFloat {
     return stored > 0 ? CGFloat(stored) : fallback
 }
 
-/// One drawing mode's width row: a size picker a parent groks instantly —
-/// each choice IS a filled circle of that literal diameter, so "bigger
-/// circle, thicker line" needs no legend. Selected state reuses
-/// `PaletteSwatch`'s recipe exactly (white-material backing circle, a
-/// stronger ink ring, no color change) — same calm "no reward circuitry"
-/// rule, same visual language, just picking a width instead of a crayon.
+/// One drawing mode's width row. Originally each choice was a filled circle
+/// at that literal diameter, but a dot's size reads relative to its own
+/// small button frame, not to the canvas the ink actually lands on — a 6pt
+/// dot in a 64pt box looks bold, while the 6pt LINE it produces on a
+/// page-sized canvas looks thin. That mismatch is what Kevin's M4-gate
+/// feedback flagged as misleading. Fixed by drawing an actual ink LINE (a
+/// stroke is a line, not a dot) at the literal width, and putting every
+/// option on one shared paper card so the five widths compare directly
+/// against each other in the same register real ink appears in — "thicker
+/// choice, thicker line on the page" is now literally what's drawn.
 private struct WidthPicker: View {
     let label: String
     let sizes: [CGFloat]
@@ -503,27 +507,28 @@ private struct WidthPicker: View {
     let accessibilityPrefix: String
     let onSelect: (CGFloat) -> Void
 
+    private static let swatchLength: CGFloat = 56
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(label)
                 .font(.system(.headline, design: .rounded))
                 .foregroundStyle(DeskStyle.inkColor)
 
-            HStack(spacing: 20) {
+            HStack(spacing: 4) {
                 ForEach(sizes, id: \.self) { size in
                     let isSelected = selected == size
                     Button(action: { onSelect(size) }) {
                         ZStack {
-                            Circle()
-                                .fill(Color.white.opacity(0.7))
-                            Circle()
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(isSelected ? DeskStyle.inkColor.opacity(0.12) : .clear)
+
+                            Capsule()
                                 .fill(DeskStyle.inkColor)
-                                .frame(width: size, height: size)
+                                .frame(width: Self.swatchLength, height: size)
                         }
-                        .overlay(
-                            Circle().strokeBorder(DeskStyle.inkColor, lineWidth: isSelected ? 3 : 0)
-                        )
-                        .frame(width: 64, height: 64)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 72)
                     }
                     .buttonStyle(.plain)
                     // Spoken name doubles as the UI-test driver's handle;
@@ -534,6 +539,17 @@ private struct WidthPicker: View {
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: DeskStyle.cardCornerRadius, style: .continuous)
+                    .fill(Color.white)
+                    .shadow(
+                        color: DeskStyle.shadowColor,
+                        radius: DeskStyle.shadowRadius,
+                        x: 0,
+                        y: DeskStyle.shadowYOffset
+                    )
+            )
         }
     }
 }
