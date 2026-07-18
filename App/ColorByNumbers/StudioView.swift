@@ -98,7 +98,17 @@ struct StudioView: View {
             // sheet presentation to prefer, and the Workshop is a wholly
             // separate "room" from the Studio, not a peek-and-pop panel.
             .fullScreenCover(isPresented: $showingWorkshop) {
-                WorkshopDoor()
+                WorkshopDoor(library: library)
+            }
+            // A cover dismissal does NOT re-fire the content's `.onAppear`
+            // (unlike a navigation pop — the content never "disappeared"),
+            // so returning from the Workshop needs its own reload: imports
+            // add cards, management renames/deletes them, and the grid must
+            // reflect all of it the moment the cover drops.
+            .onChange(of: showingWorkshop) { _, isShowing in
+                if !isShowing {
+                    loadItems()
+                }
             }
         }
     }
@@ -218,11 +228,13 @@ private struct WorkshopDoorControl: View {
 /// or leaving the Workshop, both return here to a locked door next time
 /// (DESIGN.md: ONE parental gate, no way to linger past it unlocked).
 private struct WorkshopDoor: View {
+    let library: CBNLibrary
+
     @State private var unlocked = false
 
     var body: some View {
         if unlocked {
-            WorkshopView()
+            WorkshopView(library: library)
         } else {
             WorkshopGateView(onUnlocked: { unlocked = true })
         }

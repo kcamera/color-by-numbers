@@ -1,13 +1,16 @@
+import CBNKit
 import SwiftUI
 
 /// The parent room behind the Workshop gate (DESIGN.md's agency model:
 /// "parent curates, child creates"). Same desk material as the Studio, but
 /// laid out as calm stacked groups rather than List chrome — this is a
-/// workshop bench, not a settings screen. Three sections for now: "Bring in
-/// a picture" and "Pictures" are placeholders another agent wires up (M4's
-/// import/management flows); "Drawing" is the one real feature shipped
-/// here — parent-adjustable ink width for the two drawing modes.
+/// workshop bench, not a settings screen. Three sections: "Bring in a
+/// picture" (M4's import flow, `ImportFlowView.swift`) and "Drawing" (the
+/// per-mode ink width pickers) are real; "Pictures" (rename/archive/delete
+/// management) is still a placeholder for a later agent.
 struct WorkshopView: View {
+    let library: CBNLibrary
+
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -25,7 +28,7 @@ struct WorkshopView: View {
                     }
                     .padding(.top, 8)
 
-                    BringInPictureSection()
+                    BringInPictureSection(library: library)
                     PicturesSection()
                     DrawingSection()
                 }
@@ -49,14 +52,20 @@ private struct SectionHeader: View {
     }
 }
 
-/// Placeholder: another agent delivers the actual import flow. Disabled so
-/// it reads as "not yet," not as a dead end a parent might poke at
-/// wondering why nothing happens.
+/// M4's real import entry point: presents `ImportFlowView` full-screen —
+/// same "wholly separate room" rationale `WorkshopDoor` already uses for the
+/// Gate→Workshop hop (StudioView.swift), and a fresh instance every
+/// presentation, so a cancelled-out-of import never lingers with a stale
+/// picked photo the next time this opens.
 private struct BringInPictureSection: View {
+    let library: CBNLibrary
+
+    @State private var showingImportFlow = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "Bring in a picture")
-            Button(action: {}) {
+            Button(action: { showingImportFlow = true }) {
                 Text("Choose a photo")
                     .font(.system(.body, design: .rounded, weight: .medium))
                     .foregroundStyle(DeskStyle.inkColor)
@@ -65,8 +74,9 @@ private struct BringInPictureSection: View {
                     .background(Capsule(style: .continuous).fill(Color.white.opacity(0.7)))
             }
             .buttonStyle(.plain)
-            .disabled(true)
-            .opacity(0.5)
+        }
+        .fullScreenCover(isPresented: $showingImportFlow) {
+            ImportFlowView(library: library)
         }
     }
 }
@@ -182,5 +192,5 @@ private struct WidthPicker: View {
 }
 
 #Preview(traits: .landscapeLeft) {
-    WorkshopView()
+    WorkshopView(library: previewLibrary(seeding: [.previewSample]))
 }

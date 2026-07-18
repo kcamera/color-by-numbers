@@ -371,14 +371,6 @@ final class StudioFlowUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        let wordToDigit: [String: Int] = [
-            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-            "six": 6, "seven": 7, "eight": 8, "nine": 9,
-        ]
-        func digits(from wordsText: String) -> [Int] {
-            wordsText.split(separator: " ").compactMap { wordToDigit[String($0)] }
-        }
-
         let doorButton = app.buttons["Workshop"]
         XCTAssertTrue(doorButton.waitForExistence(timeout: 10), "Workshop door never appeared")
         doorButton.tap()
@@ -440,6 +432,129 @@ final class StudioFlowUITests: XCTestCase {
 
         XCTAssertTrue(widthFour.isSelected, "Freehand width 4 should still be selected after relaunch")
         attachScreenshot(of: app, named: "workshop-5-width-persisted")
+    }
+
+    /// M4's import flow: PhotosPicker → live outline preview → two knobs →
+    /// add to Studio (`ImportFlowView.swift`). Requires the simulator's
+    /// photo library to already contain
+    /// `Fixtures/import-fixture.png` — XCUITest itself has no API to seed
+    /// Photos, so the drive script (.claude/skills/verify) must run
+    /// `xcrun simctl addmedia <udid> App/ColorByNumbersUITests/Fixtures/import-fixture.png`
+    /// BEFORE launching this suite. An empty library here is a setup gap,
+    /// not a regression in the flow, so the test skips rather than fails.
+    @MainActor
+    func testImportFlowFromSeededPhoto() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        try openWorkshop(app)
+        XCTAssertTrue(app.staticTexts["Drawing"].waitForExistence(timeout: 10), "Workshop did not appear after correct gate entry")
+
+        let chooseAPhoto = app.buttons["Choose a photo"]
+        XCTAssertTrue(chooseAPhoto.waitForExistence(timeout: 5), "Bring in a picture button missing")
+        chooseAPhoto.tap()
+
+        // The system PhotosPicker (out-of-process PHPickerViewController) —
+        // its photo cells surface as `app.images`. Generous wait: a cold
+        // simulator's Photos process can be slow to come up.
+        // Match actual photo CELLS, not just any Image: the picker shows a
+        // "Private Access to Photos" banner whose app icon is also an
+        // Image, and `app.images.firstMatch` can land on it. Real photo
+        // cells carry labels beginning with "Photo".
+        let firstPhoto = app.images.matching(
+            NSPredicate(format: "label BEGINSWITH 'Photo'")
+        ).firstMatch
+        guard firstPhoto.waitForExistence(timeout: 20) else {
+            throw XCTSkip(
+                "Simulator photo library is empty. Seed it before running this "
+                    + "suite: xcrun simctl addmedia <udid> "
+                    + "App/ColorByNumbersUITests/Fixtures/import-fixture.png"
+            )
+        }
+        // Coordinate tap, not element tap: the picker is a remote process
+        // (out-of-process PHPicker), and its cells report existence but
+        // fail XCUITest's hittability check — "Failed to not hittable" —
+        // while a tap at the cell's on-screen coordinates lands fine.
+        firstPhoto.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        // Single-select PhotosPicker dismisses itself on tap; some
+        // presentations still show an explicit confirm step, so tap it if
+        // one shows up rather than assuming either behavior.
+        let confirmAdd = app.buttons["Add"]
+        if confirmAdd.waitForExistence(timeout: 2) {
+            confirmAdd.tap()
+        }
+
+        // The knobs only render once a picture is loaded and inferred —
+        // "More colors"'s appearance IS the "the preview is up" signal.
+        let moreColors = app.buttons["More colors"]
+        XCTAssertTrue(moreColors.waitForExistence(timeout: 20), "Import preview/knobs never appeared after picking a photo")
+        attachScreenshot(of: app, named: "import-1-preview")
+
+        // Visual evidence the live preview reacts to the knob (M4 spec).
+        moreColors.tap()
+        moreColors.tap()
+        attachScreenshot(of: app, named: "import-2-more-colors")
+
+        let backToSuggested = app.buttons["Back to suggested"]
+        XCTAssertTrue(backToSuggested.waitForExistence(timeout: 5), "Back to suggested should appear once a knob moved off its inferred default")
+        backToSuggested.tap()
+        XCTAssertFalse(app.buttons["Back to suggested"].exists, "Back to suggested should hide again once values match the inferred defaults")
+
+        // The field starts empty (placeholder "New Picture"), so typing
+        // needs no select-all-and-clear dance.
+        let titleField = app.textFields["Title"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 5), "Title field missing")
+        titleField.tap()
+        titleField.typeText("Test Import")
+
+        let addToStudio = app.buttons["Add to Studio"]
+        XCTAssertTrue(addToStudio.exists, "Add to Studio button missing")
+        addToStudio.tap()
+
+        // Back in the Workshop once the import cover dismisses; close it to
+        // return to the Studio.
+        XCTAssertTrue(app.staticTexts["Drawing"].waitForExistence(timeout: 15), "Workshop did not reappear after Add to Studio")
+        app.buttons["Close"].firstMatch.tap()
+
+        let newCard = app.staticTexts["Test Import"]
+        XCTAssertTrue(newCard.waitForExistence(timeout: 10), "New Studio card 'Test Import' never appeared")
+        attachScreenshot(of: app, named: "import-3-studio-with-new-card")
+    }
+
+    // MARK: - Shared helpers
+
+    private static let wordToDigit: [String: Int] = [
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    ]
+
+    /// Reads WorkshopGateView's dealt words ("Gate words" element's spoken
+    /// label) back into the digits they encode.
+    private func digits(from wordsText: String) -> [Int] {
+        wordsText.split(separator: " ").compactMap { Self.wordToDigit[String($0)] }
+    }
+
+    /// Opens the Workshop door and solves the gate with whatever words it
+    /// deals, landing inside the Workshop. `testWorkshopGateAndWidthSetting`
+    /// deliberately doesn't use this — it exercises the gate's own
+    /// wrong-entry/silent-reset behavior directly — but every other test
+    /// that just needs to get past the gate can.
+    @MainActor
+    private func openWorkshop(_ app: XCUIApplication) throws {
+        let doorButton = app.buttons["Workshop"]
+        XCTAssertTrue(doorButton.waitForExistence(timeout: 10), "Workshop door never appeared")
+        doorButton.tap()
+
+        let gateWords = app.staticTexts["Gate words"]
+        XCTAssertTrue(gateWords.waitForExistence(timeout: 10), "Gate did not appear")
+        let dealt = digits(from: gateWords.label)
+        XCTAssertEqual(dealt.count, 3, "Gate words did not parse to three digits: \(gateWords.label)")
+        for digit in dealt {
+            app.buttons["\(digit)"].tap()
+        }
     }
 
     @MainActor
