@@ -947,25 +947,36 @@ private struct PaletteRail: View {
             let canScrollUp = scrollOffset > Self.chevronThreshold
             let canScrollDown = scrollOffset < maxOffset - Self.chevronThreshold
 
+            // Explicit width, matching the swatch column plus the shade's
+            // own margin: `RoundedRectangle` is a shape with no intrinsic
+            // size, so left unconstrained it expanded to fill all the
+            // horizontal space the enclosing HStack offered — which, since
+            // a ZStack centers its children, dragged the swatches away
+            // from the trailing edge toward the middle of the screen
+            // (Kevin's report: "the palette now shows up... in the
+            // center"). This is the width the shade and the swatches both
+            // render at, so they can never disagree again.
+            let railWidth = Self.swatchDiameter + 20
+
             ZStack {
                 // The shade: a soft backing that reads as "this is a
                 // distinct scrollable tray," not just floating swatches —
                 // only shown once there's actually more than fits, same
-                // as the chevrons. A flat white fill is invisible here
+                // as the chevrons. A flat white fill was invisible here
                 // (the rail sits over the white artwork page, not the
                 // cream desk background every OTHER white "material" in
-                // this app relies on for contrast) — a shadow is what
-                // actually lifts it off the page, same recipe as
-                // PreviewCard/the Studio's own cards.
+                // this app relies on for contrast) — a genuine ink tint,
+                // not just a shadow, is what actually shows up against
+                // white paper.
                 RoundedRectangle(cornerRadius: DeskStyle.cardCornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.55))
+                    .fill(DeskStyle.inkColor.opacity(0.1))
                     .shadow(
                         color: DeskStyle.shadowColor,
                         radius: DeskStyle.shadowRadius,
                         x: 0,
                         y: DeskStyle.shadowYOffset
                     )
-                    .padding(.horizontal, -10)
+                    .frame(width: railWidth)
 
                 ScrollView(.vertical, showsIndicators: false) {
                     paletteStack
@@ -978,6 +989,7 @@ private struct PaletteRail: View {
                             }
                         )
                 }
+                .frame(width: railWidth)
                 .coordinateSpace(name: Self.scrollCoordinateSpace)
                 .onPreferenceChange(PaletteScrollOffsetKey.self) { scrollOffset = $0 }
 
@@ -986,10 +998,11 @@ private struct PaletteRail: View {
                     Spacer()
                     ChevronHint(direction: .down).opacity(canScrollDown ? 1 : 0)
                 }
+                .frame(width: railWidth)
                 .allowsHitTesting(false)
                 .padding(.vertical, 2)
             }
-            .frame(height: bound)
+            .frame(width: railWidth, height: bound)
         }
     }
 
