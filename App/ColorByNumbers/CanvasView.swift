@@ -1188,15 +1188,6 @@ private struct PaletteSwatch: View {
     let onSelect: () -> Void
     let onPressChanged: (Bool) -> Void
 
-    /// `@GestureState`, not a plain `.onChanged`/`.onEnded` pair: SwiftUI
-    /// guarantees this resets to `false` when the gesture ends for ANY
-    /// reason — success, cancellation, or a release before
-    /// `minimumDuration` elapses — where `LongPressGesture`'s own
-    /// `.onEnded` only fires on a successful completion. Without that
-    /// guarantee, a fast release could leave the highlight stuck on with
-    /// no event left to clear it.
-    @GestureState private var isPressed = false
-
     private var swatchColor: Color {
         guard let rgb = entry.rgb else { return .white }
         return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
@@ -1212,43 +1203,49 @@ private struct PaletteSwatch: View {
     }
 
     var body: some View {
-        Button(action: onSelect) {
-            ZStack {
-                Circle()
-                    .fill(Color.white.opacity(0.7))
-                Circle()
-                    .fill(swatchColor)
-                    .padding(6)
-                Text("\(entry.number)")
-                    .font(.system(.callout, design: .rounded, weight: .bold))
-                    .foregroundStyle(numberColor)
-            }
-            .overlay(
-                // A quiet, calm selected state — a stronger ring, not a
-                // color change or animation (DESIGN.md: no reward
-                // circuitry). Function-first; the M6 polish pass owns the
-                // final look.
-                Circle()
-                    .strokeBorder(DeskStyle.inkColor, lineWidth: isSelected ? 3 : 0)
-            )
-            .frame(width: 64, height: 64)
+        ZStack {
+            Circle()
+                .fill(Color.white.opacity(0.7))
+            Circle()
+                .fill(swatchColor)
+                .padding(6)
+            Text("\(entry.number)")
+                .font(.system(.callout, design: .rounded, weight: .bold))
+                .foregroundStyle(numberColor)
         }
-        .buttonStyle(.plain)
-        // `simultaneousGesture`, not a replacement for the Button: a plain
-        // Button has no press-state callback of its own, so this rides
-        // alongside it purely to notice touch-down/touch-up for the
-        // hold-to-highlight hint. `onLongPressGesture` with a
-        // near-zero minimum duration, not a zero-distance `DragGesture` —
-        // the drag-based version never fired reliably through XCUITest's
-        // synthesized `press(forDuration:)` touch (confirmed by
-        // screenshot: no highlight ever appeared), and `pressing:` is the
-        // SwiftUI-documented primitive for exactly this "is a finger
-        // currently down" query.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.01)
-                .updating($isPressed) { value, state, _ in state = value }
+        .overlay(
+            // A quiet, calm selected state — a stronger ring, not a
+            // color change or animation (DESIGN.md: no reward
+            // circuitry). Function-first; the M6 polish pass owns the
+            // final look.
+            Circle()
+                .strokeBorder(DeskStyle.inkColor, lineWidth: isSelected ? 3 : 0)
         )
-        .onChange(of: isPressed) { _, pressing in onPressChanged(pressing) }
+        .frame(width: 64, height: 64)
+        .contentShape(Circle())
+        // ONE gesture recognizer, not a Button plus a simultaneous one:
+        // that combination measurably delayed ordinary taps and, on a
+        // real finger/Pencil (though not in simulator-synthesized
+        // touches, which is what made this look fine at first), lost the
+        // press-tracking signal outright — two recognizers arbitrating
+        // over the same touch, a well-known SwiftUI failure mode (Kevin's
+        // report). `minimumDistance: 0` reports "began" the instant a
+        // touch lands; `onEnded` always fires on release regardless of
+        // duration, so there's no stuck-highlight risk the way
+        // `LongPressGesture`'s own `.onEnded` (success-only) would have.
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in onPressChanged(true) }
+                .onEnded { _ in
+                    onPressChanged(false)
+                    onSelect()
+                }
+        )
+        // `.isButton` for VoiceOver's activation semantics, plus an
+        // explicit action — without a real `Button`, VoiceOver's
+        // double-tap needs somewhere to route to.
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.default, onSelect)
         // Spoken name for VoiceOver; also the UI-test driver's handle for
         // "hold crayon N", same dual purpose as Undo's label.
         .accessibilityLabel("Color \(entry.number)")
