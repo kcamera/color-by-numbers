@@ -99,9 +99,8 @@ private struct GateKeypad: View {
                                 .font(.system(.title2, design: .rounded, weight: .semibold))
                                 .foregroundStyle(DeskStyle.inkColor)
                                 .frame(width: 64, height: 64)
-                                .background(Circle().fill(Color.white.opacity(0.7)))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(KeypadButtonStyle())
                         // Spoken name for VoiceOver; also the UI-test
                         // driver's handle, same dual purpose as every other
                         // symbol/digit control in this app.
@@ -110,6 +109,26 @@ private struct GateKeypad: View {
                 }
             }
         }
+    }
+}
+
+/// `.plain` gave these keys NO press feedback at all — a parent tapping
+/// through three digits couldn't tell a tap had registered (Kevin's
+/// report). This swaps the fill to a noticeably darker ink tint and
+/// scales the key down slightly the instant a finger lands, so the
+/// confirmation is felt before the digit even joins `entered`.
+private struct KeypadButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                Circle().fill(
+                    configuration.isPressed
+                        ? DeskStyle.inkColor.opacity(0.35)
+                        : Color.white.opacity(0.7)
+                )
+            )
+            .scaleEffect(configuration.isPressed ? 0.9 : 1)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 
