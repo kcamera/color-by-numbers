@@ -455,13 +455,13 @@ private struct PreviewCard: View {
                     .aspectRatio(contentMode: .fit)
                     .padding(16)
                     .opacity(isRecomputing ? 0.85 : 1)
-            } else {
-                Text("Pick a photo to see it as a coloring page.")
-                    .font(.system(.body, design: .rounded))
-                    .foregroundStyle(DeskStyle.inkColor.opacity(0.6))
-                    .padding()
-                    .multilineTextAlignment(.center)
             }
+            // No image yet: the card stays blank. ImportFlowView already
+            // overlays a "Choose a photo" button dead center for this same
+            // state — a second, separate invitation ("Pick a photo to see
+            // it as a coloring page.") used to render right underneath it,
+            // and the two centered texts overlapped illegibly (Kevin's
+            // report). One call-to-action is enough.
         }
         .aspectRatio(aspectRatio, contentMode: .fit)
     }
