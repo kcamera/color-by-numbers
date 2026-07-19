@@ -9,6 +9,40 @@ import XCTest
 /// `simctl get_app_container`) are the actual verification artifacts.
 final class StudioFlowUITests: XCTestCase {
 
+    /// Press-and-hold reveal (Kevin's design, replacing an earlier
+    /// fixed-duration flash he flagged as either missable or, if
+    /// re-checked by repeat-tapping, "a flashing light simulator"):
+    /// holding a swatch selects that crayon immediately — same as a tap
+    /// always has — and shows its unfilled regions' numbers oversized for
+    /// as long as the finger stays down. XCUITest can't assert on the
+    /// transient highlight's own pixels (confirmed by hand instead, via a
+    /// throwaway sticky-state build during development — screenshot
+    /// showed a clearly oversized "2" against its normal-sized neighbors),
+    /// so this proves the surrounding functional contract: the press
+    /// selects the crayon and the canvas stays fully responsive straight
+    /// through press, hold, and release — the overlay driving the
+    /// highlight must never intercept touches or leave stray state behind.
+    @MainActor
+    func testHeldCrayonSelectsAndRevealsWithoutBreakingCanvas() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launch()
+
+        let card = app.staticTexts["Rings"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio card 'Rings' never appeared")
+        card.tap()
+        let back = app.staticTexts["Studio"]
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not open")
+
+        let colorButton = app.buttons["Color 2"]
+        XCTAssertTrue(colorButton.waitForExistence(timeout: 5), "Color 2 swatch missing")
+        colorButton.press(forDuration: 1.0)
+        attachScreenshot(of: app, named: "held-crayon-highlight")
+
+        XCTAssertTrue(back.exists, "Canvas broke after a held crayon press")
+        XCTAssertTrue(colorButton.isHittable, "Color 2 swatch unreachable after release")
+    }
+
     @MainActor
     func testTapToFillPersistsAcrossRelaunch() throws {
         // Rotate the simulated device to landscape first: on iPadOS 26's

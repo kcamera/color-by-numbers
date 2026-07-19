@@ -342,8 +342,44 @@ struct CanvasView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
 
+    /// The "where did that go" hint (Kevin's report): auto-generated
+    /// templates aren't hand-curated, so a region can be too small or its
+    /// number too tiny to spot at a glance. Held for as long as a finger
+    /// stays down on a swatch — not a fixed-duration flash: a timed pulse
+    /// is either too quick to register or, if long enough to be sure of,
+    /// forces repeat-tapping just to look again (Kevin's call — "a
+    /// flashing light simulator"). Pressing a swatch selects that crayon
+    /// immediately, same as a tap always has (his call too: previewing a
+    /// color without being able to draw it would read as a bait-and-switch
+    /// to a kid), and the hint disappears the instant the finger lifts —
+    /// selection stays. Scoped to unfilled regions only: a filled region's
+    /// number is already invisible under the child's own ink, so
+    /// highlighting it would be noise with nothing to reveal.
+    @State private var heldColorNumber: Int?
+    /// How much bigger the held-crayon's number renders vs. its normal
+    /// in-canvas size — noticeable without being cartoonish.
+    private static let heldNumberSizeMultiplier: CGFloat = 2.2
+
     init(library: CBNLibrary, item: CBNLibraryItem) {
         _model = State(initialValue: CanvasModel(library: library, item: item))
+    }
+
+    /// Called by `PaletteRail` on press-down/press-up. Press-down both
+    /// selects the crayon (same effect a plain tap already has) and starts
+    /// the hint; press-up only ends the hint — the selection it already
+    /// made is untouched. The fade-in is a soft touch, not load-bearing;
+    /// the fade-out is intentionally instant (no `withAnimation`) rather
+    /// than cross-fading stale content, since the number for the newly
+    /// nil state simply isn't drawn anymore.
+    private func swatchPressed(_ number: Int, isPressing: Bool) {
+        if isPressing {
+            model.selectColor(number)
+            withAnimation(.easeIn(duration: 0.12)) {
+                heldColorNumber = number
+            }
+        } else if heldColorNumber == number {
+            heldColorNumber = nil
+        }
     }
 
     var body: some View {
@@ -391,6 +427,30 @@ struct CanvasView: View {
 
                     Canvas { context, _ in
                         draw(template: template, filledIDs: filledIDs, fit: fit, in: context)
+                    }
+
+                    // The crayon-hint (see `swatchPressed`): only present
+                    // in the view tree while a swatch is actually held, so
+                    // it costs nothing the rest of the time — no
+                    // `TimelineView`, no fixed duration, driven directly by
+                    // touch state. Sits above the base fills so the
+                    // oversized numbers are never buried under a
+                    // neighboring region's paint, but below the committed
+                    // ink layer so a child's actual scribbles are never
+                    // dimmed by it.
+                    if let heldColorNumber {
+                        Canvas { context, _ in
+                            drawFlash(
+                                template: template,
+                                filledIDs: filledIDs,
+                                colorNumber: heldColorNumber,
+                                fit: fit,
+                                opacity: 1,
+                                in: context
+                            )
+                        }
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                     }
 
                     // COMMITTED ink: every completed gesture, rendered from
@@ -529,10 +589,12 @@ struct CanvasView: View {
                         PaletteRail(
                             palette: template.palette,
                             selectedColorNumber: model.selectedColorNumber,
-                            availableHeight: proxy.size.height
-                        ) { number in
-                            model.selectColor(number)
-                        }
+                            availableHeight: proxy.size.height,
+                            onSelect: { number in model.selectColor(number) },
+                            onPressChanged: { number, isPressing in
+                                swatchPressed(number, isPressing: isPressing)
+                            }
+                        )
                     }
                     Spacer()
                 }
@@ -640,6 +702,72 @@ struct CanvasView: View {
             .font(.system(size: displaySize, design: .rounded))
             .foregroundStyle(color)
         context.draw(text, at: fit.templateToView(region.labelPoint), anchor: .center)
+    }
+
+    /// One frame of the crayon-hint flash: every UNFILLED region matching
+    /// `colorNumber` gets its number redrawn oversized, at `opacity`. Never
+    /// touches the region's own fill or boundary stroke (Kevin's call —
+    /// the boundary is the one source of truth for coloring, and must stay
+    /// exactly as sharp as it always is).
+    private func drawFlash(
+        template: CBNTemplate,
+        filledIDs: Set<String>,
+        colorNumber: Int,
+        fit: FitTransform,
+        opacity: Double,
+        in context: GraphicsContext
+    ) {
+        for region in template.regions {
+            guard region.colorNumber == colorNumber,
+                  !filledIDs.contains(region.id),
+                  region.path.count >= 3
+            else { continue }
+            drawFlashNumber(region: region, fit: fit, opacity: opacity, in: context)
+        }
+    }
+
+    /// A faked outline (8 offset copies in a light tone, then the real
+    /// glyph in dark ink on top) rather than a true CoreText stroke — this
+    /// sticks to the exact same `context.draw(Text, at:anchor:)` call
+    /// `drawNumber` above already uses successfully in this same `Canvas`,
+    /// instead of `GraphicsContext.withCGContext`'s separate coordinate
+    /// space, whose exact orientation/scale relative to `fit`'s view-space
+    /// points wasn't actually verified and produced nothing on screen at
+    /// all when tried. A light halo paired with a dark fill still reads
+    /// against any background, which matters since an oversized number can
+    /// visually spill onto a neighboring filled region of a different
+    /// color.
+    private func drawFlashNumber(
+        region: CBNRegion,
+        fit: FitTransform,
+        opacity: Double,
+        in context: GraphicsContext
+    ) {
+        let netArea = max(
+            abs(PolygonGeometry.signedArea(of: region.path))
+                - region.holes.reduce(0) { $0 + abs(PolygonGeometry.signedArea(of: $1)) },
+            1
+        )
+        let diameter = netArea.squareRoot()
+        let templateFontSize = min(max(diameter * 0.22, 9), 40) * Self.heldNumberSizeMultiplier
+        let displaySize = max(templateFontSize * fit.scale, 7)
+        let point = fit.templateToView(region.labelPoint)
+        let font = Font.system(size: displaySize, weight: .bold, design: .rounded)
+
+        let haloText = Text("\(region.colorNumber)")
+            .font(font)
+            .foregroundStyle(Color.white.opacity(opacity))
+        let haloOffset: CGFloat = max(displaySize * 0.05, 1.5)
+        for dx in [-haloOffset, 0, haloOffset] {
+            for dy in [-haloOffset, 0, haloOffset] where dx != 0 || dy != 0 {
+                context.draw(haloText, at: CGPoint(x: point.x + dx, y: point.y + dy), anchor: .center)
+            }
+        }
+
+        let fillText = Text("\(region.colorNumber)")
+            .font(font)
+            .foregroundStyle(Color(red: 0.35, green: 0.33, blue: 0.31).opacity(opacity))
+        context.draw(fillText, at: point, anchor: .center)
     }
 }
 
@@ -916,6 +1044,12 @@ private struct PaletteRail: View {
     let selectedColorNumber: Int
     let availableHeight: CGFloat
     let onSelect: (Int) -> Void
+    /// Press-began/press-ended per swatch, for the hold-to-highlight hint
+    /// (`CanvasView.swatchPressed`) — separate from `onSelect` (the
+    /// Button's own tap action, which VoiceOver's double-tap activation
+    /// also reaches) so a VoiceOver select can never leave the hint stuck
+    /// on with no press-up to clear it.
+    let onPressChanged: (Int, Bool) -> Void
 
     /// Scroll position within the rail, reported by `paletteStack`'s
     /// geometry-tracking background. Drives which chevron hint shows —
@@ -1014,7 +1148,8 @@ private struct PaletteRail: View {
                 PaletteSwatch(
                     entry: entry,
                     isSelected: entry.number == selectedColorNumber,
-                    action: { onSelect(entry.number) }
+                    onSelect: { onSelect(entry.number) },
+                    onPressChanged: { isPressing in onPressChanged(entry.number, isPressing) }
                 )
             }
         }
@@ -1050,7 +1185,17 @@ private struct ChevronHint: View {
 private struct PaletteSwatch: View {
     let entry: CBNPaletteEntry
     let isSelected: Bool
-    let action: () -> Void
+    let onSelect: () -> Void
+    let onPressChanged: (Bool) -> Void
+
+    /// `@GestureState`, not a plain `.onChanged`/`.onEnded` pair: SwiftUI
+    /// guarantees this resets to `false` when the gesture ends for ANY
+    /// reason — success, cancellation, or a release before
+    /// `minimumDuration` elapses — where `LongPressGesture`'s own
+    /// `.onEnded` only fires on a successful completion. Without that
+    /// guarantee, a fast release could leave the highlight stuck on with
+    /// no event left to clear it.
+    @GestureState private var isPressed = false
 
     private var swatchColor: Color {
         guard let rgb = entry.rgb else { return .white }
@@ -1067,7 +1212,7 @@ private struct PaletteSwatch: View {
     }
 
     var body: some View {
-        Button(action: action) {
+        Button(action: onSelect) {
             ZStack {
                 Circle()
                     .fill(Color.white.opacity(0.7))
@@ -1089,6 +1234,21 @@ private struct PaletteSwatch: View {
             .frame(width: 64, height: 64)
         }
         .buttonStyle(.plain)
+        // `simultaneousGesture`, not a replacement for the Button: a plain
+        // Button has no press-state callback of its own, so this rides
+        // alongside it purely to notice touch-down/touch-up for the
+        // hold-to-highlight hint. `onLongPressGesture` with a
+        // near-zero minimum duration, not a zero-distance `DragGesture` —
+        // the drag-based version never fired reliably through XCUITest's
+        // synthesized `press(forDuration:)` touch (confirmed by
+        // screenshot: no highlight ever appeared), and `pressing:` is the
+        // SwiftUI-documented primitive for exactly this "is a finger
+        // currently down" query.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.01)
+                .updating($isPressed) { value, state, _ in state = value }
+        )
+        .onChange(of: isPressed) { _, pressing in onPressChanged(pressing) }
         // Spoken name for VoiceOver; also the UI-test driver's handle for
         // "hold crayon N", same dual purpose as Undo's label.
         .accessibilityLabel("Color \(entry.number)")
