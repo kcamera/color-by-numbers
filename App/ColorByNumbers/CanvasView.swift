@@ -905,14 +905,32 @@ private struct DrawingCanvas: UIViewRepresentable {
 /// floor matters more than avoiding a scroll gesture, and a shrunk swatch
 /// would make a large palette hardest to use exactly when it's already
 /// hardest to tell colors apart.
+///
+/// Bounded well short of the full available height (not just enough to
+/// avoid touching the screen edge) — a tall rail was overlapping the
+/// top-trailing Color-it-again/Done row and the bottom-trailing Undo
+/// control (Kevin's second report). Now that it's scrollable, giving up
+/// some vertical span to guarantee clearance is the right trade.
 private struct PaletteRail: View {
     let palette: [CBNPaletteEntry]
     let selectedColorNumber: Int
     let availableHeight: CGFloat
     let onSelect: (Int) -> Void
 
+    /// Scroll position within the rail, reported by `paletteStack`'s
+    /// geometry-tracking background. Drives which chevron hint shows —
+    /// an arrow pointing at content that isn't there (already at that
+    /// end) would be dishonest, the one thing this app is careful never
+    /// to be anywhere else (autosaved thumbnails, no fake states).
+    @State private var scrollOffset: CGFloat = 0
+
     private static let swatchDiameter: CGFloat = 64
     private static let spacing: CGFloat = 12
+    /// Reserved above and below the rail so it clears the corner controls
+    /// regardless of exact button heights — roughly Undo's 64pt circle
+    /// plus breathing room, applied symmetrically for simplicity.
+    private static let verticalClearance: CGFloat = 220
+    private static let chevronThreshold: CGFloat = 2
 
     private var contentHeight: CGFloat {
         CGFloat(palette.count) * Self.swatchDiameter
@@ -920,19 +938,62 @@ private struct PaletteRail: View {
     }
 
     var body: some View {
-        // Leaves headroom so a full-height rail never touches the very
-        // top/bottom edge, matching this layer's own .padding(24).
-        let bound = max(availableHeight - 48, Self.swatchDiameter)
+        let bound = max(availableHeight - Self.verticalClearance, Self.swatchDiameter)
 
         if contentHeight <= bound {
             paletteStack
         } else {
-            ScrollView(.vertical, showsIndicators: false) {
-                paletteStack
+            let maxOffset = contentHeight - bound
+            let canScrollUp = scrollOffset > Self.chevronThreshold
+            let canScrollDown = scrollOffset < maxOffset - Self.chevronThreshold
+
+            ZStack {
+                // The shade: a soft backing that reads as "this is a
+                // distinct scrollable tray," not just floating swatches —
+                // only shown once there's actually more than fits, same
+                // as the chevrons. A flat white fill is invisible here
+                // (the rail sits over the white artwork page, not the
+                // cream desk background every OTHER white "material" in
+                // this app relies on for contrast) — a shadow is what
+                // actually lifts it off the page, same recipe as
+                // PreviewCard/the Studio's own cards.
+                RoundedRectangle(cornerRadius: DeskStyle.cardCornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(0.55))
+                    .shadow(
+                        color: DeskStyle.shadowColor,
+                        radius: DeskStyle.shadowRadius,
+                        x: 0,
+                        y: DeskStyle.shadowYOffset
+                    )
+                    .padding(.horizontal, -10)
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    paletteStack
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: PaletteScrollOffsetKey.self,
+                                    value: -proxy.frame(in: .named(Self.scrollCoordinateSpace)).minY
+                                )
+                            }
+                        )
+                }
+                .coordinateSpace(name: Self.scrollCoordinateSpace)
+                .onPreferenceChange(PaletteScrollOffsetKey.self) { scrollOffset = $0 }
+
+                VStack {
+                    ChevronHint(direction: .up).opacity(canScrollUp ? 1 : 0)
+                    Spacer()
+                    ChevronHint(direction: .down).opacity(canScrollDown ? 1 : 0)
+                }
+                .allowsHitTesting(false)
+                .padding(.vertical, 2)
             }
             .frame(height: bound)
         }
     }
+
+    private static let scrollCoordinateSpace = "PaletteRail.scroll"
 
     private var paletteStack: some View {
         VStack(spacing: Self.spacing) {
@@ -944,6 +1005,29 @@ private struct PaletteRail: View {
                 )
             }
         }
+    }
+}
+
+private struct PaletteScrollOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// A quiet "there's more this way" hint — never a button, just a fading
+/// chevron so it can never be mistaken for something tappable in its own
+/// right (DESIGN.md: no reward circuitry, no ambiguous affordances).
+private struct ChevronHint: View {
+    enum Direction { case up, down }
+    let direction: Direction
+
+    var body: some View {
+        Image(systemName: direction == .up ? "chevron.up" : "chevron.down")
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(DeskStyle.inkColor.opacity(0.85))
+            .frame(width: 32, height: 22)
+            .background(Capsule(style: .continuous).fill(Color.white.opacity(0.9)))
     }
 }
 

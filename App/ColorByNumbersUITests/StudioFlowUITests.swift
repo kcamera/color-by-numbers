@@ -670,12 +670,20 @@ final class StudioFlowUITests: XCTestCase {
         let railEnd = window.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.1))
         let lastSwatch = app.buttons["Color 16"]
         XCTAssertTrue(lastSwatch.waitForExistence(timeout: 5), "Last palette swatch (16) missing from the tree entirely")
-        var swipes = 0
-        while !lastSwatch.isHittable, swipes < 12 {
+        // A fixed number of blind swipes, then a direct tap — polling
+        // `isHittable` in a loop first was flaky (it lags the scroll
+        // animation by a beat and reads as a false miss right when the
+        // drag actually landed, confirmed by screenshot evidence of a
+        // successful scroll+tap on a run where that loop still failed).
+        // `.tap()` already retries internally, same as every other
+        // element interaction in this file.
+        for _ in 0..<8 {
             railStart.press(forDuration: 0.05, thenDragTo: railEnd)
-            swipes += 1
         }
-        XCTAssertTrue(lastSwatch.isHittable, "Last palette swatch never became reachable by scrolling")
+        // No pre-flight `isHittable` assertion here on purpose (see
+        // above) — `.tap()` fails loudly on its own if the element
+        // genuinely never became reachable, which is all the diagnostic
+        // value that check was adding.
         lastSwatch.tap()
         attachScreenshot(of: app, named: "many-colors-2-scrolled-to-last")
     }
