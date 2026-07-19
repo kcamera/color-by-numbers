@@ -494,7 +494,13 @@ final class StudioFlowUITests: XCTestCase {
         attachScreenshot(of: app, named: "import-1-preview")
 
         // Visual evidence the live preview reacts to the knob (M4 spec).
+        // Each tap must wait for the button to be ENABLED, not just exist:
+        // the very first inferred preview can still be rendering when this
+        // test reaches here, and a tap during that window is correctly a
+        // no-op under the new press-lock (see `waitForEnabled`).
+        XCTAssertTrue(waitForEnabled(moreColors), "More colors never became enabled (stuck locked?)")
         moreColors.tap()
+        XCTAssertTrue(waitForEnabled(moreColors), "More colors never re-enabled after the first tap's render")
         moreColors.tap()
         attachScreenshot(of: app, named: "import-2-more-colors")
 
@@ -514,9 +520,18 @@ final class StudioFlowUITests: XCTestCase {
         XCTAssertTrue(addToStudio.exists, "Add to Studio button missing")
         addToStudio.tap()
 
-        // Back in the Workshop once the import cover dismisses; close it to
-        // return to the Studio.
+        // Back in the Workshop once the import cover dismisses. The new
+        // picture must show up in "Pictures" right here, without leaving
+        // and re-entering the Workshop — `PicturesSection` is a sibling of
+        // the import button, not something the cover's dismissal used to
+        // notify at all (Kevin's report: a completed import never showed
+        // up in Pictures until leaving and re-entering the Workshop).
         XCTAssertTrue(app.staticTexts["Drawing"].waitForExistence(timeout: 15), "Workshop did not reappear after Add to Studio")
+        XCTAssertTrue(
+            app.staticTexts["Test Import"].waitForExistence(timeout: 10),
+            "New picture 'Test Import' never appeared in the Workshop's Pictures list"
+        )
+
         app.buttons["Close"].firstMatch.tap()
 
         let newCard = app.staticTexts["Test Import"]
@@ -691,6 +706,22 @@ final class StudioFlowUITests: XCTestCase {
     /// label) back into the digits they encode.
     private func digits(from wordsText: String) -> [Int] {
         wordsText.split(separator: " ").compactMap { Self.wordToDigit[String($0)] }
+    }
+
+    /// Waits for `element` to be enabled, not just present — the import
+    /// flow's knob buttons (`ImportFlowView.swift`'s `isRenderingPipeline`
+    /// lock, added for Kevin's "how do I know my tap registered" report)
+    /// exist the instant the knobs row appears but stay disabled while the
+    /// very first inferred preview is still rendering. `waitForExistence`
+    /// alone doesn't see that: a tap that lands during that window is
+    /// correctly swallowed (that's the lock working), but a test that
+    /// doesn't wait for `isEnabled` first would tap into the same silent
+    /// no-op a real fast-tapping parent could hit, and read it as broken.
+    @MainActor
+    private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval = 20) -> Bool {
+        let predicate = NSPredicate(format: "isEnabled == true")
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
     /// Opens the Workshop door and solves the gate with whatever words it

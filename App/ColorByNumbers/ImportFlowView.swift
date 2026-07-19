@@ -46,6 +46,15 @@ struct ImportFlowView: View {
     /// opacity dip (DESIGN.md's calm contract: no spinners popping in and
     /// out). The previous preview stays fully visible underneath.
     @State private var isRecomputing = false
+    /// True only once the actual pipeline is running — a strict subset of
+    /// `isRecomputing`'s window (which also spans the ~300ms debounce
+    /// sleep). Locks the knobs/reset control so a parent can't lose track
+    /// of whether a tap registered (Kevin's report) without ALSO blocking
+    /// the rapid-tap-to-target flow the debounce exists for: taps during
+    /// the debounce window still land freely and coalesce into one render,
+    /// same as before this lock existed; only the real ~1s pipeline run
+    /// itself is what visibly locks the controls.
+    @State private var isRenderingPipeline = false
     @State private var isAdding = false
     /// Bumped on every knob change; a completed render only takes effect if
     /// it's still the newest one requested (see `renderPreview`) — the
@@ -174,8 +183,8 @@ struct ImportFlowView: View {
                 valueText: "\(colorCount) colors",
                 decreaseLabel: "Fewer colors",
                 increaseLabel: "More colors",
-                canDecrease: colorCount > Self.colorRange.lowerBound,
-                canIncrease: colorCount < Self.colorRange.upperBound,
+                canDecrease: colorCount > Self.colorRange.lowerBound && !isRenderingPipeline,
+                canIncrease: colorCount < Self.colorRange.upperBound && !isRenderingPipeline,
                 onDecrease: decreaseColorCount,
                 onIncrease: increaseColorCount
             )
@@ -184,8 +193,8 @@ struct ImportFlowView: View {
                 valueText: "\(Int(minRegionMM)) mm",
                 decreaseLabel: "Smaller pieces",
                 increaseLabel: "Bigger pieces",
-                canDecrease: mmTierIndex > 0,
-                canIncrease: mmTierIndex < Self.mmTiers.count - 1,
+                canDecrease: mmTierIndex > 0 && !isRenderingPipeline,
+                canIncrease: mmTierIndex < Self.mmTiers.count - 1 && !isRenderingPipeline,
                 onDecrease: decreaseMinRegion,
                 onIncrease: increaseMinRegion
             )
@@ -206,6 +215,8 @@ struct ImportFlowView: View {
                     .underline()
             }
             .buttonStyle(.plain)
+            .disabled(isRenderingPipeline)
+            .opacity(isRenderingPipeline ? 0.4 : 1)
         }
     }
 
@@ -377,11 +388,13 @@ struct ImportFlowView: View {
     /// above, catching the (rarer) case where two renders end up briefly
     /// in flight at once.
     private func renderPreview(image: RasterImage, parameters: ImportParameters, generation: Int) async {
+        isRenderingPipeline = true
         let rendered = await Task.detached(priority: .userInitiated) { () -> Image? in
             let template = ImportPipeline.importTemplate(from: image, title: "", parameters: parameters)
             guard let cgImage = TemplateRenderer.render(template, mode: .outline, scale: 1) else { return nil }
             return Image(decorative: cgImage, scale: 1)
         }.value
+        isRenderingPipeline = false
 
         guard generation == previewGeneration else { return }
         if let rendered {
