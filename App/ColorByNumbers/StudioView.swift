@@ -233,6 +233,8 @@ private struct TemplateCard: View {
     }
 }
 
+#if DEBUG
 #Preview(traits: .landscapeLeft) {
     StudioView(library: previewLibrary(seeding: [.previewSample]))
 }
+#endif

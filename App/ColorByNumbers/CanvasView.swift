@@ -957,6 +957,7 @@ private struct PaletteSwatch: View {
     }
 }
 
+#if DEBUG
 #Preview(traits: .landscapeLeft) {
     let library = previewLibrary(seeding: [.previewSample])
     let item = (try? library.items())?.first
@@ -966,3 +967,4 @@ private struct PaletteSwatch: View {
         }
     }
 }
+#endif

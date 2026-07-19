@@ -153,6 +153,8 @@ struct CloseControl: View {
     }
 }
 
+#if DEBUG
 #Preview(traits: .landscapeLeft) {
     WorkshopGateView(onUnlocked: {})
 }
+#endif

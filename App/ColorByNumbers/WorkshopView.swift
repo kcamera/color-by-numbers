@@ -554,6 +554,8 @@ private struct WidthPicker: View {
     }
 }
 
+#if DEBUG
 #Preview(traits: .landscapeLeft) {
     WorkshopView(library: previewLibrary(seeding: [.previewSample]))
 }
+#endif
