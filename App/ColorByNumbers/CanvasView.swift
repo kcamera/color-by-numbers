@@ -429,30 +429,6 @@ struct CanvasView: View {
                         draw(template: template, filledIDs: filledIDs, fit: fit, in: context)
                     }
 
-                    // The crayon-hint (see `swatchPressed`): only present
-                    // in the view tree while a swatch is actually held, so
-                    // it costs nothing the rest of the time — no
-                    // `TimelineView`, no fixed duration, driven directly by
-                    // touch state. Sits above the base fills so the
-                    // oversized numbers are never buried under a
-                    // neighboring region's paint, but below the committed
-                    // ink layer so a child's actual scribbles are never
-                    // dimmed by it.
-                    if let heldColorNumber {
-                        Canvas { context, _ in
-                            drawFlash(
-                                template: template,
-                                filledIDs: filledIDs,
-                                colorNumber: heldColorNumber,
-                                fit: fit,
-                                opacity: 1,
-                                in: context
-                            )
-                        }
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                    }
-
                     // COMMITTED ink: every completed gesture, rendered from
                     // the single source of truth (model.drawing). A separate
                     // layer from the live PKCanvasView below so boundary-
@@ -535,6 +511,35 @@ struct CanvasView: View {
                         } else {
                             Rectangle()
                         }
+                    }
+
+                    // The crayon-hint (see `swatchPressed`): only present
+                    // in the view tree while a swatch is actually held, so
+                    // it costs nothing the rest of the time — no
+                    // `TimelineView`, no fixed duration, driven directly by
+                    // touch state. Deliberately ABOVE both ink layers, not
+                    // below: an earlier version sat under committed ink on
+                    // the reasoning that a child's own marks should never
+                    // be dimmed, but that made the hint useless for the
+                    // exact regions it exists to help find — an unfilled
+                    // region can easily already have some ink on it
+                    // (Kevin's report: numbers were flashing then
+                    // vanishing under the ink). The hint is transient and
+                    // parent-initiated; briefly sitting on top of ink for
+                    // as long as a finger is held is the right trade.
+                    if let heldColorNumber {
+                        Canvas { context, _ in
+                            drawFlash(
+                                template: template,
+                                filledIDs: filledIDs,
+                                colorNumber: heldColorNumber,
+                                fit: fit,
+                                opacity: 1,
+                                in: context
+                            )
+                        }
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
@@ -1188,6 +1193,26 @@ private struct PaletteSwatch: View {
     let onSelect: () -> Void
     let onPressChanged: (Bool) -> Void
 
+    /// Movement past this, from touch-down, means "this is a scroll
+    /// through the rail, not a press on me" — the rail is a vertical
+    /// list of exactly these swatches, so every scroll attempt
+    /// necessarily starts by touching one. `.simultaneousGesture` alone
+    /// isn't enough: even letting the ScrollView also see the touch, MY
+    /// own state still needs to back off once real movement shows up, or
+    /// scrolling would drag a stuck highlight along with it.
+    private static let scrollCancelDistance: CGFloat = 10
+    /// A committed hold (select + reveal) waits this long past
+    /// touch-down before firing, not the instant a finger lands — Kevin's
+    /// report: an immediate commit is exactly what made a scroll attempt
+    /// register as a press, since the very first touch sample of ANY
+    /// gesture (scroll included) starts at zero movement. A quick tap
+    /// still selects instantly on release, via the un-committed path
+    /// below — this delay only ever affects the hold-to-reveal path.
+    private static let holdCommitDelay: TimeInterval = 0.08
+
+    @State private var pressStartDate: Date?
+    @State private var hasCommittedHold = false
+
     private var swatchColor: Color {
         guard let rgb = entry.rgb else { return .white }
         return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
@@ -1229,16 +1254,54 @@ private struct PaletteSwatch: View {
         // touches, which is what made this look fine at first), lost the
         // press-tracking signal outright — two recognizers arbitrating
         // over the same touch, a well-known SwiftUI failure mode (Kevin's
-        // report). `minimumDistance: 0` reports "began" the instant a
-        // touch lands; `onEnded` always fires on release regardless of
-        // duration, so there's no stuck-highlight risk the way
-        // `LongPressGesture`'s own `.onEnded` (success-only) would have.
-        .gesture(
+        // report).
+        //
+        // `.simultaneousGesture`, not `.gesture`: an exclusive claim here
+        // is exactly what blocked the enclosing `ScrollView` from ever
+        // recognizing a scroll that starts by touching a swatch — which,
+        // in a vertical list of nothing BUT swatches, is every scroll
+        // (Kevin's report: dragging to scroll registered as a hold).
+        // Letting the ScrollView compete for the same touch means this
+        // view has to back off on its own once real movement shows up,
+        // rather than relying on ever winning exclusive ownership.
+        .simultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in onPressChanged(true) }
-                .onEnded { _ in
-                    onPressChanged(false)
-                    onSelect()
+                .onChanged { value in
+                    let distance = hypot(value.translation.width, value.translation.height)
+                    guard distance <= Self.scrollCancelDistance else {
+                        // This has become a scroll, not a press — release
+                        // any hold already committed and stop tracking;
+                        // a pause mid-scroll is free to start a fresh
+                        // hold attempt from scratch.
+                        if hasCommittedHold {
+                            onPressChanged(false)
+                        }
+                        hasCommittedHold = false
+                        pressStartDate = nil
+                        return
+                    }
+                    let start = pressStartDate ?? Date()
+                    pressStartDate = start
+                    if !hasCommittedHold, Date().timeIntervalSince(start) >= Self.holdCommitDelay {
+                        hasCommittedHold = true
+                        // `onPressChanged(true)` is what selects the
+                        // crayon (CanvasView.swatchPressed) as well as
+                        // starting the reveal — one call, not a
+                        // redundant second select here.
+                        onPressChanged(true)
+                    }
+                }
+                .onEnded { value in
+                    let distance = hypot(value.translation.width, value.translation.height)
+                    if hasCommittedHold {
+                        onPressChanged(false)
+                    } else if distance <= Self.scrollCancelDistance {
+                        // A quick tap, never held long enough to commit —
+                        // still a real, intentional selection.
+                        onSelect()
+                    }
+                    hasCommittedHold = false
+                    pressStartDate = nil
                 }
         )
         // `.isButton` for VoiceOver's activation semantics, plus an
