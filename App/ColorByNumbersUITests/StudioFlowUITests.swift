@@ -463,13 +463,25 @@ final class StudioFlowUITests: XCTestCase {
         // "Private Access to Photos" banner whose app icon is also an
         // Image, and `app.images.firstMatch` can land on it. Real photo
         // cells carry labels beginning with "Photo".
-        let firstPhoto = app.images.matching(
-            NSPredicate(format: "label BEGINSWITH 'Photo'")
-        ).firstMatch
+        //
+        // The grid orders OLDEST-seeded first (confirmed empirically —
+        // not the "most recent first" a Recents view would suggest), so
+        // the SECOND cell is whatever got seeded second. This test needs
+        // `import-fixture.png` specifically (flat 3-color art, so it
+        // always leaves headroom below the 16-color ceiling for "More
+        // colors" to move) — seeded AFTER rainbow-fixture.png, so it's
+        // cell index 1. See `testManyColorImportKeepsCanvasControlsReachable`'s
+        // doc comment, which targets the FIRST cell (rainbow, seeded
+        // first) for the opposite reason.
+        let photoMatches = app.images.matching(NSPredicate(format: "label BEGINSWITH 'Photo'"))
+        let firstPhoto = photoMatches.element(boundBy: 1)
         guard firstPhoto.waitForExistence(timeout: 20) else {
             throw XCTSkip(
-                "Simulator photo library is empty. Seed it before running this "
-                    + "suite: xcrun simctl addmedia <udid> "
+                "Simulator photo library needs at least 2 photos, seeded in this "
+                    + "exact order (the picker grid puts the FIRST-seeded photo "
+                    + "first): xcrun simctl addmedia <udid> "
+                    + "App/ColorByNumbersUITests/Fixtures/rainbow-fixture.png && "
+                    + "xcrun simctl addmedia <udid> "
                     + "App/ColorByNumbersUITests/Fixtures/import-fixture.png"
             )
         }
@@ -537,6 +549,135 @@ final class StudioFlowUITests: XCTestCase {
         let newCard = app.staticTexts["Test Import"]
         XCTAssertTrue(newCard.waitForExistence(timeout: 10), "New Studio card 'Test Import' never appeared")
         attachScreenshot(of: app, named: "import-3-studio-with-new-card")
+    }
+
+    /// M4's color-count knob goes up to 16 (`ImportFlowView.colorRange`),
+    /// but `PaletteRail` (CanvasView.swift) was built assuming "our
+    /// templates top out at 6 colors" — a 12+ color import overflowed its
+    /// unbounded VStack, which stretched the WHOLE layer past the screen
+    /// and pushed every OTHER corner control (Undo, Back, ModeSwitch) off
+    /// screen with it (Kevin's report). A synthetic rainbow-gradient source
+    /// image (`rainbow-fixture.png`) whose own natural fidelity elbow sits
+    /// exactly at the knob's 16-color ceiling puts the import straight at
+    /// that ceiling with no tapping needed; this confirms every other
+    /// canvas control stays reachable, plus that the palette rail itself
+    /// becomes scrollable rather than silently dropping swatches.
+    ///
+    /// Needs a source image with real color variety — `import-fixture.png`
+    /// is flat 3-color art that can never quantize past 3 colors no matter
+    /// what the knob asks for. Targets the FIRST grid cell: the picker
+    /// grid orders OLDEST-seeded first (confirmed empirically — not a
+    /// Recents-style newest-first), so seeding rainbow-fixture.png FIRST
+    /// puts it at cell index 0. `testImportFlowFromSeededPhoto` claims
+    /// cell index 1 (`import-fixture.png`, seeded second) for the
+    /// opposite reason — it needs headroom below the color ceiling for
+    /// its own knob taps to do anything, and this fixture's inferred
+    /// count sits AT that ceiling, which would make "More colors" a
+    /// permanent no-op there. Seed order:
+    /// `xcrun simctl addmedia <udid> .../rainbow-fixture.png &&
+    /// xcrun simctl addmedia <udid> .../import-fixture.png`.
+    @MainActor
+    func testManyColorImportKeepsCanvasControlsReachable() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+
+        let app = XCUIApplication()
+        app.launch()
+
+        try openWorkshop(app)
+        XCTAssertTrue(app.staticTexts["Drawing"].waitForExistence(timeout: 10), "Workshop did not appear after correct gate entry")
+
+        let chooseAPhoto = app.buttons["Choose a photo"]
+        XCTAssertTrue(chooseAPhoto.waitForExistence(timeout: 5), "Bring in a picture button missing")
+        chooseAPhoto.tap()
+
+        // First grid cell — rainbow-fixture, seeded first. See the doc
+        // comment above for why this isn't cell index 1.
+        let firstPhoto = app.images.matching(
+            NSPredicate(format: "label BEGINSWITH 'Photo'")
+        ).firstMatch
+        guard firstPhoto.waitForExistence(timeout: 20) else {
+            throw XCTSkip(
+                "Simulator photo library is empty, or seeded in the wrong order "
+                    + "(rainbow-fixture.png must be seeded FIRST). Seed it before "
+                    + "running this suite: xcrun simctl addmedia <udid> "
+                    + "App/ColorByNumbersUITests/Fixtures/rainbow-fixture.png && "
+                    + "xcrun simctl addmedia <udid> "
+                    + "App/ColorByNumbersUITests/Fixtures/import-fixture.png"
+            )
+        }
+        firstPhoto.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        let confirmAdd = app.buttons["Add"]
+        if confirmAdd.waitForExistence(timeout: 2) {
+            confirmAdd.tap()
+        }
+
+        // The rainbow gradient's own natural fidelity elbow (confirmed via
+        // `cbnc suggest`) sits exactly at the knob's ceiling, 16 — no
+        // tapping needed; the INFERRED default already puts the palette
+        // rail at the exact size this test exists to exercise. "More
+        // colors" is correctly disabled from the first frame here (there's
+        // nowhere higher to go), so this only waits for the knobs to
+        // render at all, not for them to become enabled.
+        let moreColors = app.buttons["More colors"]
+        XCTAssertTrue(moreColors.waitForExistence(timeout: 45), "Import preview/knobs never appeared after picking a photo")
+
+        let titleField = app.textFields["Title"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 5), "Title field missing")
+        titleField.tap()
+        titleField.typeText("Rainbow Test")
+
+        let addToStudio = app.buttons["Add to Studio"]
+        XCTAssertTrue(addToStudio.exists, "Add to Studio button missing")
+        addToStudio.tap()
+
+        XCTAssertTrue(app.staticTexts["Drawing"].waitForExistence(timeout: 15), "Workshop did not reappear after Add to Studio")
+        XCTAssertTrue(
+            app.staticTexts["Rainbow Test"].waitForExistence(timeout: 10),
+            "New picture 'Rainbow Test' never appeared in the Workshop's Pictures list"
+        )
+        app.buttons["Close"].firstMatch.tap()
+
+        let card = app.staticTexts["Rainbow Test"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Studio card 'Rainbow Test' never appeared")
+        card.tap()
+
+        // Canvas: the regression itself. Every OTHER corner control must
+        // stay reachable regardless of how tall the palette rail's full
+        // content would be — this is what broke before the fix (the whole
+        // layer stretched past the screen and took these controls with it).
+        let back = app.staticTexts["Studio"]
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "Canvas did not open")
+        XCTAssertTrue(back.isHittable, "Back control pushed off screen by an oversized palette rail")
+        XCTAssertTrue(app.buttons["Tap mode"].isHittable, "Mode switch pushed off screen by an oversized palette rail")
+        XCTAssertTrue(app.buttons["Undo"].waitForExistence(timeout: 5), "Undo control missing")
+        XCTAssertTrue(app.buttons["Undo"].isHittable, "Undo control pushed off screen by an oversized palette rail")
+
+        let firstSwatch = app.buttons["Color 1"]
+        XCTAssertTrue(firstSwatch.waitForExistence(timeout: 5), "First palette swatch missing")
+        XCTAssertTrue(firstSwatch.isHittable, "First palette swatch unreachable")
+        attachScreenshot(of: app, named: "many-colors-1-canvas")
+
+        // The last swatch proves the rail actually scrolls rather than
+        // just clipping content off — it must EXIST (never silently
+        // dropped) even before scrolling reaches it. Dragged from a FIXED
+        // screen coordinate over the rail's trailing-edge column, not from
+        // any specific swatch element — `firstSwatch.swipeUp()` scrolls
+        // that very element out from under itself after one pass, and
+        // every retry after that fails with "visible frame is empty."
+        let window = app.windows.firstMatch
+        let railStart = window.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.6))
+        let railEnd = window.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.1))
+        let lastSwatch = app.buttons["Color 16"]
+        XCTAssertTrue(lastSwatch.waitForExistence(timeout: 5), "Last palette swatch (16) missing from the tree entirely")
+        var swipes = 0
+        while !lastSwatch.isHittable, swipes < 12 {
+            railStart.press(forDuration: 0.05, thenDragTo: railEnd)
+            swipes += 1
+        }
+        XCTAssertTrue(lastSwatch.isHittable, "Last palette swatch never became reachable by scrolling")
+        lastSwatch.tap()
+        attachScreenshot(of: app, named: "many-colors-2-scrolled-to-last")
     }
 
     /// M4's Pictures management (WorkshopView.swift's `PicturesSection`):

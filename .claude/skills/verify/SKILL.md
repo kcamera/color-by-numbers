@@ -76,3 +76,38 @@ tests, with NO crash report anywhere (the app never crashed — the other
 runner killed it). Before any suite run: `ps aux | grep xcodebuild` and
 kill strays. If tests "crash" with no .ips file in
 ~/Library/Logs/DiagnosticReports, suspect this first.
+
+## Two-fixture photo seeding: order matters, and `addmedia` never dedupes
+
+`testImportFlowFromSeededPhoto` and
+`testManyColorImportKeepsCanvasControlsReachable` both drive the system
+PhotosPicker and pick a photo by GRID POSITION, not by filename — PHPicker
+doesn't expose one. Confirmed empirically (screenshot the grid itself if
+this ever seems to drift): the grid orders **oldest-seeded first**, NOT
+newest-first the way a Recents view would suggest. `firstMatch` =
+rainbow-fixture (seeded first, needed by
+`testManyColorImportKeepsCanvasControlsReachable`); `.element(boundBy: 1)`
+= import-fixture (seeded second, needed by
+`testImportFlowFromSeededPhoto` — it needs headroom below the color
+ceiling for its own knob taps to do anything, and the rainbow fixture's
+inferred count already sits AT that 16-color ceiling, which would make
+"More colors" a permanent no-op).
+
+Seed BOTH fixtures, in this exact order, before running the suite:
+
+```sh
+UDID=$(xcrun simctl list devices | grep -i "iPad (A16)" | grep -o '[0-9A-F-]\{36\}')
+xcrun simctl addmedia "$UDID" App/ColorByNumbersUITests/Fixtures/rainbow-fixture.png
+xcrun simctl addmedia "$UDID" App/ColorByNumbersUITests/Fixtures/import-fixture.png
+```
+
+**`addmedia` ADDS, it never replaces or dedupes** — calling it again
+(e.g. on a later verification pass) adds a SECOND copy, shifting grid
+positions and silently breaking both tests' index assumptions. This bit
+one session hard: repeated `addmedia` calls across several verification
+passes left FOUR duplicate rainbow-fixture copies in the grid, so
+`.element(boundBy: 1)` kept landing on a fifth rainbow copy instead of
+the flag. Uninstalling the APP (`simctl uninstall`) does NOT touch the
+Photos library — only a full `xcrun simctl erase <udid>` (then reboot)
+clears seeded photos. Erase before RE-seeding if either test's photo
+selection ever looks wrong; don't just addmedia again.

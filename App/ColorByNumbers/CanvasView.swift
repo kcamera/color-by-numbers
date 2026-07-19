@@ -514,18 +514,28 @@ struct CanvasView: View {
             // both hug their corners — the two Spacers keep equal clearance
             // on either side regardless of screen height (M3 spec: inset
             // from those corners, not stacked alongside them).
-            VStack {
-                Spacer()
-                HStack {
+            //
+            // Wrapped in its own GeometryReader so PaletteRail knows how
+            // much vertical room it actually has — a 12+ color import (M4
+            // knob range 4...16) overflowed the old unbounded VStack,
+            // which stretched this whole layer past the screen and pushed
+            // every OTHER corner control (Undo, Back, ModeSwitch) off
+            // screen with it (Kevin's report).
+            GeometryReader { proxy in
+                VStack {
                     Spacer()
-                    PaletteRail(
-                        palette: template.palette,
-                        selectedColorNumber: model.selectedColorNumber
-                    ) { number in
-                        model.selectColor(number)
+                    HStack {
+                        Spacer()
+                        PaletteRail(
+                            palette: template.palette,
+                            selectedColorNumber: model.selectedColorNumber,
+                            availableHeight: proxy.size.height
+                        ) { number in
+                            model.selectColor(number)
+                        }
                     }
+                    Spacer()
                 }
-                Spacer()
             }
             .padding(24)
 
@@ -886,15 +896,46 @@ private struct DrawingCanvas: UIViewRepresentable {
 /// order, along the trailing edge. Color-BY-NUMBER means the number
 /// annotation is the point (DESIGN.md — the child matches crayon number to
 /// region numbers), so every swatch shows both its color and its number,
-/// never color alone. Our templates top out at 6 colors, so this is a
-/// plain stack — no scrolling to build for a case that doesn't exist yet.
+/// never color alone.
+///
+/// Import's knobs go up to 16 colors (M4), so the plain stack this used to
+/// be doesn't always fit — `availableHeight` (the enclosing GeometryReader
+/// in `CanvasView.body`) is what decides whether it needs to scroll.
+/// Swatches never shrink to force a fit: DESIGN.md's ≥64pt small-finger
+/// floor matters more than avoiding a scroll gesture, and a shrunk swatch
+/// would make a large palette hardest to use exactly when it's already
+/// hardest to tell colors apart.
 private struct PaletteRail: View {
     let palette: [CBNPaletteEntry]
     let selectedColorNumber: Int
+    let availableHeight: CGFloat
     let onSelect: (Int) -> Void
 
+    private static let swatchDiameter: CGFloat = 64
+    private static let spacing: CGFloat = 12
+
+    private var contentHeight: CGFloat {
+        CGFloat(palette.count) * Self.swatchDiameter
+            + CGFloat(max(palette.count - 1, 0)) * Self.spacing
+    }
+
     var body: some View {
-        VStack(spacing: 12) {
+        // Leaves headroom so a full-height rail never touches the very
+        // top/bottom edge, matching this layer's own .padding(24).
+        let bound = max(availableHeight - 48, Self.swatchDiameter)
+
+        if contentHeight <= bound {
+            paletteStack
+        } else {
+            ScrollView(.vertical, showsIndicators: false) {
+                paletteStack
+            }
+            .frame(height: bound)
+        }
+    }
+
+    private var paletteStack: some View {
+        VStack(spacing: Self.spacing) {
             ForEach(palette, id: \.number) { entry in
                 PaletteSwatch(
                     entry: entry,
