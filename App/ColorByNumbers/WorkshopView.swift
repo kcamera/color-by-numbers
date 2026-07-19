@@ -18,6 +18,18 @@ struct WorkshopView: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    // `BringInPictureSection` and `PicturesSection` are separate sibling
+    // views, each with their own private state — `PicturesSection` only
+    // (re)reads the library on ITS OWN `.onAppear`, which a
+    // `fullScreenCover` dismissal never re-fires (same root cause as the
+    // Studio-not-reloading-after-Workshop bug from earlier in M4, just one
+    // level deeper). Kevin's report: a completed import never showed up in
+    // "Pictures" until leaving and re-entering the Workshop entirely. This
+    // counter is the bridge: bumped whenever the import cover dismisses
+    // (added or cancelled — reload is cheap and idempotent either way),
+    // read by `PicturesSection` as a reload trigger.
+    @State private var picturesReloadTrigger = 0
+
     var body: some View {
         ZStack {
             DeskStyle.deskColor.ignoresSafeArea()
@@ -33,8 +45,10 @@ struct WorkshopView: View {
                     }
                     .padding(.top, 8)
 
-                    BringInPictureSection(library: library)
-                    PicturesSection(library: library)
+                    BringInPictureSection(library: library) {
+                        picturesReloadTrigger += 1
+                    }
+                    PicturesSection(library: library, reloadTrigger: picturesReloadTrigger)
                     DrawingSection()
                 }
                 .padding(32)
@@ -64,6 +78,10 @@ private struct SectionHeader: View {
 /// picked photo the next time this opens.
 private struct BringInPictureSection: View {
     let library: CBNLibrary
+    /// Fires once the import cover dismisses, added picture or not — lets
+    /// `WorkshopView` tell the (unrelated, sibling) `PicturesSection` to
+    /// reload without the two views knowing anything else about each other.
+    let onImportFlowDismissed: () -> Void
 
     @State private var showingImportFlow = false
 
@@ -80,7 +98,7 @@ private struct BringInPictureSection: View {
             }
             .buttonStyle(.plain)
         }
-        .fullScreenCover(isPresented: $showingImportFlow) {
+        .fullScreenCover(isPresented: $showingImportFlow, onDismiss: onImportFlowDismissed) {
             ImportFlowView(library: library)
         }
     }
@@ -94,6 +112,7 @@ private struct BringInPictureSection: View {
 /// system alert chrome, just this section's own calm inline swaps.
 private struct PicturesSection: View {
     let library: CBNLibrary
+    let reloadTrigger: Int
 
     @State private var items: [CBNLibraryItem] = []
     /// Every attempt per item, NEWEST FIRST — `CBNLibrary.attempts(in:)`'s
@@ -129,6 +148,7 @@ private struct PicturesSection: View {
             }
         }
         .onAppear(perform: reload)
+        .onChange(of: reloadTrigger) { _, _ in reload() }
     }
 
     /// Re-reads the library's full state — items plus every item's attempt
