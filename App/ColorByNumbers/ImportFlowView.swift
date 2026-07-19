@@ -4,12 +4,15 @@ import SwiftUI
 
 /// The M4 "bring in a picture" flow — DESIGN.md's "co-op couch ritual" and
 /// "The transformation experience" (amended at the M1 gate): PhotosPicker,
-/// then ONE live preview of the actual picture as a coloring page, two knobs
-/// with inferred + resettable defaults. Deliberately NOT preset cards and NOT
-/// a reveal moment — both were cut at M1. Presented full-screen from
-/// WorkshopView's "Bring in a picture" section, same "wholly separate room"
-/// rationale as the Workshop door itself (StudioView.swift's `WorkshopDoor`
-/// doc comment).
+/// then ONE live preview of the actual picture as a colorized coloring page
+/// (fills + outlines, `TemplateRenderer.Mode.composite` — a deliberate
+/// spoiler of the finished art, not the blank page the child actually
+/// colors; see `renderPreview`'s doc comment), two knobs with inferred +
+/// resettable defaults. Deliberately NOT preset cards and NOT a reveal
+/// moment — both were cut at M1. Presented full-screen from WorkshopView's
+/// "Bring in a picture" section, same "wholly separate room" rationale as
+/// the Workshop door itself (StudioView.swift's `WorkshopDoor` doc
+/// comment).
 struct ImportFlowView: View {
     let library: CBNLibrary
 
@@ -382,16 +385,27 @@ struct ImportFlowView: View {
         }
     }
 
-    /// Runs the actual pipeline + outline render off-main, then applies the
-    /// result only if `generation` is still the newest one requested — the
-    /// generation counter is a second guard behind the debounce-cancel
-    /// above, catching the (rarer) case where two renders end up briefly
-    /// in flight at once.
+    /// Runs the actual pipeline + a `.composite` render (fills plus
+    /// outlines) off-main, then applies the result only if `generation` is
+    /// still the newest one requested — the generation counter is a second
+    /// guard behind the debounce-cancel above, catching the (rarer) case
+    /// where two renders end up briefly in flight at once.
+    ///
+    /// Deliberately the colorized face, not the blank outline a child
+    /// actually colors: Kevin's call — judging whether a conversion is any
+    /// good from bare numbered outlines asks a parent to imagine both the
+    /// palette AND the region-count tradeoff in their head, which is the
+    /// whole point of having two live knobs to react to in the first
+    /// place. This IS a spoiler of the finished art, and that's the point:
+    /// nobody commits to coloring something they can't tell they'll like.
+    /// The knobs' outline-page RESULT never changes — this only changes
+    /// what the parent looks at while choosing it; the child only ever
+    /// sees the blank outline page once it's in the Studio.
     private func renderPreview(image: RasterImage, parameters: ImportParameters, generation: Int) async {
         isRenderingPipeline = true
         let rendered = await Task.detached(priority: .userInitiated) { () -> Image? in
             let template = ImportPipeline.importTemplate(from: image, title: "", parameters: parameters)
-            guard let cgImage = TemplateRenderer.render(template, mode: .outline, scale: 1) else { return nil }
+            guard let cgImage = TemplateRenderer.render(template, mode: .composite, scale: 1) else { return nil }
             return Image(decorative: cgImage, scale: 1)
         }.value
         isRenderingPipeline = false
