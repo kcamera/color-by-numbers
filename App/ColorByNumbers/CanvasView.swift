@@ -137,13 +137,13 @@ final class CanvasModel {
     }
 
     /// `DrawingCanvas`'s per-gesture autosave path: the live canvas hands
-    /// over the finished gesture's strokes — already clipped by the view in
-    /// boundary-assist mode — and clears itself; committed ink lives here,
-    /// in `drawing`. An empty `landed` (a boundary gesture made entirely
-    /// outside the held crayon's regions) is the calm no-op: the in-flight
-    /// mask already showed no ink, so nothing appears and nothing is
-    /// logged. Mirrors `tap`'s save-through contract (DESIGN.md's
-    /// continuous autosave).
+    /// over the finished gesture's strokes whole — boundary-assist is a
+    /// render-time paint mask, never a data rewrite (GestureLanding) — and
+    /// clears itself; committed ink lives here, in `drawing`. An empty
+    /// `landed` (a boundary gesture made entirely outside the held crayon's
+    /// regions) is the calm no-op: the in-flight mask already showed no
+    /// ink, so nothing appears and nothing is logged. Mirrors `tap`'s
+    /// save-through contract (DESIGN.md's continuous autosave).
     func gestureCompleted(landing landed: [PKStroke], clipped: Bool) {
         guard !landed.isEmpty else { return }
         drawing = PKDrawing(strokes: drawing.strokes + landed)
@@ -154,9 +154,9 @@ final class CanvasModel {
     /// Generous, always-available undo (DESIGN.md), unified across both
     /// action kinds (M3): consults which kind of thing happened last and
     /// takes back exactly that, rather than always assuming a fill. A
-    /// stroke entry undoes as a whole GESTURE — boundary-assist may have
-    /// baked one gesture into several sub-strokes, and the child undoes
-    /// what she did, not what the clipper did. A no-op when nothing has
+    /// stroke entry undoes as a whole GESTURE — the entry carries how many
+    /// `PKStroke`s the gesture spanned, and the child undoes what she did,
+    /// however PencilKit chose to store it. A no-op when nothing has
     /// ever happened in this attempt, so the button can stay tappable
     /// rather than disabled.
     func undo() {
@@ -228,8 +228,10 @@ private func regionPath(_ region: CBNRegion, fit: FitTransform) -> Path {
 /// region masks in, and any region drawn later masks back OUT
 /// (`.destinationOut`), so a sky-colored stroke can't paint through the
 /// sails stacked on top of the sky polygon. View-level and current-color
-/// only: it exists for the in-flight stroke's feel; committed strokes are
-/// clipped in their DATA (StrokeClipper) and never pass through this.
+/// only: it exists for the in-flight stroke's feel; committed gestures never
+/// pass through this — `CommittedInkRenderer` masks each clipped gesture's
+/// paint to this same geometry (`allowedInkMask`), per the crayon that made
+/// it, so strokes from different crayons coexist.
 private struct BoundaryMask: View {
     let template: CBNTemplate
     let selectedColorNumber: Int
@@ -249,43 +251,52 @@ private struct BoundaryMask: View {
     }
 }
 
-/// Bakes boundary-assist's promise into the stroke DATA: sample the
-/// finished gesture finely, keep only the samples where ink is allowed, and
-/// rebuild the survivors as separate strokes wherever the gesture left the
-/// allowed area. Data-level rather than a view mask because committed
-/// strokes from DIFFERENT crayons must coexist — a view mask fits only one
-/// color at a time and would re-clip old ink on every crayon change.
+/// Decides whether a finished boundary-assist gesture left any VISIBLE ink.
+///
+/// The gesture's strokes land in the document UNMODIFIED — boundary-assist's
+/// pixel promise is enforced by `CommittedInkRenderer` masking the gesture's
+/// PAINT to the crayon's allowed area, the exact-geometry twin of the live
+/// `BoundaryMask`. Rewriting the stroke data here instead (the original
+/// StrokeClipper) is what made ink change as it dried: filtering samples by
+/// where the stroke's CENTER line sat threw away every point whose center
+/// strayed outside while its width still painted inside, so slivers the
+/// child watched herself cover went bald at gesture end. Data stays whole;
+/// the mask does all the clipping; wet and dry are the same picture by
+/// construction.
+///
+/// What's left to decide is only the calm no-op: a gesture made entirely
+/// outside the held crayon's regions showed nothing under the in-flight
+/// mask, so nothing should land and nothing should be logged — an Undo that
+/// takes back invisible ink reads as a broken button.
 @MainActor
-private enum StrokeClipper {
+private enum GestureLanding {
     /// Sample step along the path, in view points: fine enough that a fast
-    /// flick can't tunnel across a thin forbidden band between two allowed
-    /// regions.
+    /// flick can't tunnel across a thin allowed band between two forbidden
+    /// ones without a sample.
     static let sampleStep: CGFloat = 2
 
-    static func clip(_ stroke: PKStroke, allowedAt: (CGPoint) -> Bool) -> [PKStroke] {
-        var runs: [[PKStrokePoint]] = []
-        var current: [PKStrokePoint] = []
+    /// True when any of the stroke's PAINT — not just its center line —
+    /// overlaps the allowed area: each sample probes its center plus four
+    /// compass points at the ink's radius, so a stroke that only grazed a
+    /// region edge-on still counts as the visible ink it produced.
+    static func landsVisibly(
+        _ stroke: PKStroke,
+        inkRadius: CGFloat,
+        allowedAt: (CGPoint) -> Bool
+    ) -> Bool {
+        let offsets = [
+            CGPoint.zero,
+            CGPoint(x: inkRadius, y: 0), CGPoint(x: -inkRadius, y: 0),
+            CGPoint(x: 0, y: inkRadius), CGPoint(x: 0, y: -inkRadius),
+        ]
         for point in stroke.path.interpolatedPoints(by: .distance(sampleStep)) {
-            if allowedAt(point.location.applying(stroke.transform)) {
-                current.append(point)
-            } else if !current.isEmpty {
-                runs.append(current)
-                current = []
+            let center = point.location.applying(stroke.transform)
+            for offset in offsets
+            where allowedAt(CGPoint(x: center.x + offset.x, y: center.y + offset.y)) {
+                return true
             }
         }
-        if !current.isEmpty { runs.append(current) }
-
-        // A one-sample run is a sampling artifact at a border crossing, not
-        // something the child meaningfully drew — dropping it beats leaving
-        // stray dots along region edges.
-        return runs.filter { $0.count >= 2 }.map { run in
-            PKStroke(
-                ink: stroke.ink,
-                path: PKStrokePath(controlPoints: run, creationDate: stroke.path.creationDate),
-                transform: stroke.transform,
-                mask: stroke.mask
-            )
-        }
+        return false
     }
 }
 
@@ -433,9 +444,9 @@ struct CanvasView: View {
                     // the single source of truth (model.drawing). A separate
                     // layer from the live PKCanvasView below so boundary-
                     // assist's in-flight mask can never re-clip strokes made
-                    // earlier with a DIFFERENT crayon — those were clipped
-                    // at the data level when their gesture ended, and render
-                    // here mask-free.
+                    // earlier with a DIFFERENT crayon — the renderer masks
+                    // each clipped gesture's paint to its own crayon's
+                    // allowed area, recovered from the action log.
                     // Rendered in template space by the shared renderer
                     // (which is what enforces boundary-assist's pixel
                     // promise on committed ink), then framed to the
@@ -469,12 +480,17 @@ struct CanvasView: View {
                     ) { gestureStrokes in
                         let landed: [PKStroke]
                         if mode == .boundaryAssist {
-                            // Data-level clip: keep the samples where the
-                            // topmost region under the pen matches the held
-                            // crayon — occlusion for free, since "visible
-                            // region at a point" IS the hit test.
-                            landed = gestureStrokes.flatMap { stroke in
-                                StrokeClipper.clip(stroke) { location in
+                            // The gesture lands whole — clipping is the
+                            // renderer's paint mask, never a data rewrite
+                            // (GestureLanding's doc: the wet/dry fidelity
+                            // fix). This only drops strokes that never
+                            // showed a single visible pixel. "Topmost
+                            // region under the probe matches the held
+                            // crayon" gives occlusion for free, since
+                            // "visible region at a point" IS the hit test.
+                            let inkRadius = DrawingFeel.width(for: mode) / 2
+                            landed = gestureStrokes.filter { stroke in
+                                GestureLanding.landsVisibly(stroke, inkRadius: inkRadius) { location in
                                     guard let region = template.region(at: fit.viewToTemplate(location))
                                     else { return false }
                                     return region.colorNumber == selectedColorNumber
@@ -487,8 +503,9 @@ struct CanvasView: View {
                         // coordinate system — view points are an accident
                         // of this session's canvas size. `clipped` rides
                         // into the action log so renderers know to mask
-                        // this gesture's PAINT, not just its center line
-                        // (CommittedInkRenderer — the ink-width bloom fix).
+                        // this gesture's PAINT to the crayon's allowed
+                        // area (CommittedInkRenderer — the mask is the
+                        // boundary promise's sole enforcement).
                         model.gestureCompleted(
                             landing: PKDrawing(strokes: landed)
                                 .transformed(using: fit.viewToTemplateTransform)
@@ -938,8 +955,9 @@ enum DrawingFeel {
 /// itself; committed ink is `CanvasModel.drawing`, rendered by the separate
 /// committed-image layer in `CanvasView.body`. The split is what makes
 /// boundary-assist coherent across crayon changes: the live layer wears the
-/// current crayon's mask, while committed strokes — already data-clipped to
-/// whatever crayon made them — render mask-free.
+/// current crayon's mask, while committed gestures are re-masked by
+/// `CommittedInkRenderer` per the crayon that made each one (recovered from
+/// the action log), so old ink never re-clips to a new crayon.
 private struct DrawingCanvas: UIViewRepresentable {
     /// Tap-to-fill mode must not have this layer intercept touches at all
     /// (M3 spec) — the tap gesture on the `Canvas` beneath is naturally
