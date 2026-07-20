@@ -30,12 +30,16 @@ import UIKit
 @MainActor
 enum InkCoverage {
     /// Fraction of a region's visible pixels that must carry ink before it
-    /// counts as colored. Forgiving on purpose: the child rarely inks the
-    /// last sliver against a boundary line, and the failure mode is gentle
-    /// in both directions (a hint number appears or doesn't — no reward,
-    /// no judgment, nothing lost). `[design-sensitive]` — tune on real
-    /// artwork, not in theory.
-    nonisolated static let threshold: Double = 0.85
+    /// counts as colored. Somewhat forgiving on purpose: the child rarely
+    /// inks the last sliver against a boundary line, and the failure mode
+    /// is gentle in both directions (a hint number appears or doesn't — no
+    /// reward, no judgment, nothing lost). A deliberate plain percentage,
+    /// nothing fancier (Kevin's call at 0.85→0.90 hands-on tuning): big
+    /// regions therefore tolerate proportionally bigger bald patches, and
+    /// if that ever genuinely misleads, an absolute-area cap can join it
+    /// later. `[design-sensitive]`, and deliberately NOT a parent-facing
+    /// setting.
+    nonisolated static let threshold: Double = 0.90
 
     /// Ink alpha above this counts as "a painted pixel" (out of 255).
     /// Low on purpose: the crayon is opaque monoline (DrawingFeel), so
