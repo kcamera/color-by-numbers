@@ -111,22 +111,59 @@ final class CanvasModel {
         } else {
             drawing = PKDrawing()
         }
-        refreshCoverage()
+        paintDidChange()
     }
 
     var template: CBNTemplate { item.template }
 
-    /// Re-measures `coveredRegionIDs` from the current paint — called after
-    /// every mutation (and once at load). Synchronous on purpose: the
-    /// measurement raster is coarse (InkCoverage.maxRasterDimension), so
-    /// this is far cheaper than the full-scale committed-ink render the
-    /// canvas already performs on the same beat.
-    private func refreshCoverage() {
+    /// Everything derived from the paint, refreshed together — called after
+    /// every mutation (and once at load): re-measures `coveredRegionIDs`
+    /// (synchronous on purpose: the measurement raster is coarse —
+    /// InkCoverage.maxRasterDimension — so this is far cheaper than the
+    /// committed-ink render) and drops the memoized committed-ink image.
+    private func paintDidChange() {
         coveredRegionIDs = InkCoverage.coveredRegionIDs(
             template: template,
             attempt: attempt,
             drawing: drawing
         )
+        inkImageCache = nil
+    }
+
+    /// Memoized committed-ink render, keyed by output geometry and
+    /// invalidated by `paintDidChange`. Rendering lived in `body` before
+    /// this, rebuilding a full-scale UIImage on EVERY SwiftUI evaluation —
+    /// holding a palette swatch triggers two rapid evaluations inside one
+    /// animated transaction, and the big ink layer's backing image churning
+    /// identity mid-animation dropped a frame: Kevin's report of all
+    /// committed ink (every color, strokes only — tap fills live in the
+    /// base Canvas layer) blinking out for a split second when the crayon
+    /// hint appears. Returning the SAME UIImage instance while paint is
+    /// unchanged makes that layer inert across evaluations — and stops
+    /// paying an O(gestures) render per evaluation as a session grows.
+    ///
+    /// `@ObservationIgnored` on the cache: the memoizing write happens
+    /// during `body` evaluation, and an observed write there would
+    /// re-notify observers mid-update. Observation still tracks the paint
+    /// itself fine — every paint mutation writes `attempt`, which `body`
+    /// reads directly.
+    @ObservationIgnored
+    private var inkImageCache: (scale: CGFloat, displayScale: CGFloat, image: UIImage?)?
+
+    func committedInkImage(scale: CGFloat, displayScale: CGFloat) -> UIImage? {
+        if let cache = inkImageCache, cache.scale == scale, cache.displayScale == displayScale {
+            return cache.image
+        }
+        let image = CommittedInkRenderer.image(
+            drawing: drawing,
+            actionLog: attempt.actionLog,
+            tapFillRegionIDs: attempt.tapFillRegionIDs,
+            template: template,
+            scale: scale,
+            screenScale: displayScale
+        )
+        inkImageCache = (scale, displayScale, image)
+        return image
     }
 
     /// A tap in TEMPLATE coordinate space (already mapped back through the
@@ -141,7 +178,7 @@ final class CanvasModel {
               !attempt.hasTapFill(region.id)
         else { return }
         attempt.recordTapFill(region.id)
-        refreshCoverage()
+        paintDidChange()
         save()
     }
 
@@ -170,7 +207,7 @@ final class CanvasModel {
         guard !landed.isEmpty else { return }
         drawing = PKDrawing(strokes: drawing.strokes + landed)
         attempt.recordStroke(drawing.dataRepresentation(), substrokes: landed.count, clipped: clipped)
-        refreshCoverage()
+        paintDidChange()
         save()
     }
 
@@ -186,7 +223,7 @@ final class CanvasModel {
         switch attempt.actionLog.last {
         case .fill:
             attempt.undoLastTapFill()
-            refreshCoverage()
+            paintDidChange()
             save()
         case .strokes(let count), .clippedStrokes(let count):
             var strokes = drawing.strokes
@@ -194,7 +231,7 @@ final class CanvasModel {
             let updated = PKDrawing(strokes: strokes)
             drawing = updated
             attempt.undoLastStroke(updatedDrawing: strokes.isEmpty ? nil : updated.dataRepresentation())
-            refreshCoverage()
+            paintDidChange()
             save()
         case nil:
             break
@@ -215,7 +252,7 @@ final class CanvasModel {
         do {
             attempt = try library.newAttempt(in: item.id)
             drawing = PKDrawing()
-            refreshCoverage()
+            paintDidChange()
         } catch {
             assertionFailure("Failed to color it again: \(error)")
         }
@@ -425,13 +462,6 @@ struct CanvasView: View {
         // than to Canvas's separate rendering closure.
         let template = model.template
         let tapFillIDs = Set(model.attempt.tapFillRegionIDs)
-        // Ordered, unlike `tapFillIDs` above: the committed-ink renderer
-        // needs paint CHRONOLOGY (which tap fill happened at which point in
-        // the log), not just membership, to repaint a late fill over an
-        // earlier scribble (M3 crayon-layering fix).
-        let tapFillRegionIDs = model.attempt.tapFillRegionIDs
-        let drawing = model.drawing
-        let actionLog = model.attempt.actionLog
         let mode = model.mode
         let selectedColorNumber = model.selectedColorNumber
         // M3: the log, not the fill count, is what Undo dims on — an
@@ -483,14 +513,13 @@ struct CanvasView: View {
                     // promise on committed ink), then framed to the
                     // artwork's on-screen size — the ZStack centers it,
                     // and the fit transform centers the artwork, so the
-                    // two agree by construction.
-                    if let ink = CommittedInkRenderer.image(
-                        drawing: drawing,
-                        actionLog: actionLog,
-                        tapFillRegionIDs: tapFillRegionIDs,
-                        template: template,
+                    // two agree by construction. Served from the model's
+                    // memoized render (see `committedInkImage`), so this
+                    // layer is inert across evaluations that don't change
+                    // the paint.
+                    if let ink = model.committedInkImage(
                         scale: fit.scale,
-                        screenScale: displayScale
+                        displayScale: displayScale
                     ) {
                         Image(uiImage: ink)
                             .resizable()
@@ -1261,10 +1290,21 @@ private struct PaletteSwatch: View {
     /// gesture (scroll included) starts at zero movement. A quick tap
     /// still selects instantly on release, via the un-committed path
     /// below — this delay only ever affects the hold-to-reveal path.
-    private static let holdCommitDelay: TimeInterval = 0.08
+    /// Long enough that a leisurely scroll's first movement usually
+    /// arrives first (movement cancels the pending commit), short enough
+    /// that an intentional hold never feels laggy.
+    private static let holdCommitDelay: TimeInterval = 0.15
 
     @State private var pressStartDate: Date?
     @State private var hasCommittedHold = false
+    /// The pending commit, armed at touch-down. A TIMER, not a check
+    /// inside `.onChanged`: onChanged only fires when the gesture VALUE
+    /// changes, and a perfectly still finger produces exactly one sample
+    /// at touch-down and then silence — an elapsed-time check living
+    /// there never ran again, so finger holds never committed while
+    /// Pencil holds (whose force/azimuth jitter streams samples
+    /// continuously) worked fine (Kevin's report).
+    @State private var holdCommitTask: Task<Void, Never>?
 
     private var swatchColor: Color {
         guard let rgb = entry.rgb else { return .white }
@@ -1322,10 +1362,13 @@ private struct PaletteSwatch: View {
                 .onChanged { value in
                     let distance = hypot(value.translation.width, value.translation.height)
                     guard distance <= Self.scrollCancelDistance else {
-                        // This has become a scroll, not a press — release
-                        // any hold already committed and stop tracking;
-                        // a pause mid-scroll is free to start a fresh
+                        // This has become a scroll, not a press — disarm
+                        // any pending commit, release any hold already
+                        // committed, and stop tracking; a pause back near
+                        // the touch-down point is free to start a fresh
                         // hold attempt from scratch.
+                        holdCommitTask?.cancel()
+                        holdCommitTask = nil
                         if hasCommittedHold {
                             onPressChanged(false)
                         }
@@ -1333,9 +1376,11 @@ private struct PaletteSwatch: View {
                         pressStartDate = nil
                         return
                     }
-                    let start = pressStartDate ?? Date()
-                    pressStartDate = start
-                    if !hasCommittedHold, Date().timeIntervalSince(start) >= Self.holdCommitDelay {
+                    guard pressStartDate == nil else { return }
+                    pressStartDate = Date()
+                    holdCommitTask = Task {
+                        try? await Task.sleep(for: .seconds(Self.holdCommitDelay))
+                        guard !Task.isCancelled, pressStartDate != nil, !hasCommittedHold else { return }
                         hasCommittedHold = true
                         // `onPressChanged(true)` is what selects the
                         // crayon (CanvasView.swatchPressed) as well as
@@ -1345,12 +1390,14 @@ private struct PaletteSwatch: View {
                     }
                 }
                 .onEnded { value in
+                    holdCommitTask?.cancel()
+                    holdCommitTask = nil
                     let distance = hypot(value.translation.width, value.translation.height)
                     if hasCommittedHold {
                         onPressChanged(false)
                     } else if distance <= Self.scrollCancelDistance {
-                        // A quick tap, never held long enough to commit —
-                        // still a real, intentional selection.
+                        // A quick tap, released before the commit timer
+                        // fired — still a real, intentional selection.
                         onSelect()
                     }
                     hasCommittedHold = false
