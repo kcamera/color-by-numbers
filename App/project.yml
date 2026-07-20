@@ -59,9 +59,23 @@ targets:
         SWIFT_VERSION: "6.0"
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 0.1.0
-    scheme:
-      testTargets:
-        - ColorByNumbersUITests
+
+  # App-side logic tests — for code that needs UIKit/PencilKit and so can't
+  # live in CBNKit's SwiftPM tests (which must stay UI-framework-free):
+  # today that's InkCoverage's pixel measurement. Hosted in the app
+  # (xcodegen wires TEST_HOST automatically from the dependency) so
+  # @testable import reaches app-target types.
+  ColorByNumbersTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - ColorByNumbersTests
+    dependencies:
+      - target: ColorByNumbers
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
 
   # Runtime-verification driver, not a unit-test suite: drives the real app
   # through the studio/canvas flow on a simulator and captures screenshot
@@ -77,3 +91,31 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
+
+# Explicit (not the target-level `scheme:` shorthand) so Run pins to
+# Release on purpose: xcodegen regenerates the WHOLE .xcodeproj, schemes
+# included, from this file every time, so an Edit Scheme change made by
+# hand in Xcode's UI never survives the next regen (bit Kevin on M4 --
+# Cmd-R quietly reverted to Debug). Debug is ~30x slower for CBNKit's
+# image work (region merging, quantization), which reads as a hung app on
+# a real photo; Release is what Cmd-R needs to be testing on a real iPad
+# to mean anything. Test stays Debug -- faster iteration, and the driven
+# suite doesn't need real-photo performance to prove the flows work.
+schemes:
+  ColorByNumbers:
+    build:
+      targets:
+        ColorByNumbers: all
+    run:
+      config: Release
+    test:
+      config: Debug
+      targets:
+        - ColorByNumbersTests
+        - ColorByNumbersUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

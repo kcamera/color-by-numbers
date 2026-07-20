@@ -4,7 +4,7 @@ import UIKit
 
 /// One region's rings as an even-odd CGPath in TEMPLATE space — the
 /// building block of `allowedInkMask` below.
-private func templateSpaceCGPath(_ region: CBNRegion) -> CGPath {
+func templateSpaceCGPath(_ region: CBNRegion) -> CGPath {
     let path = CGMutablePath()
     for ring in [region.path] + region.holes where ring.count >= 3 {
         path.move(to: CGPoint(x: ring[0].x, y: ring[0].y))
@@ -41,8 +41,9 @@ func allowedInkMask(template: CBNTemplate, colorNumber: Int) -> CGPath {
 /// `CommittedInkRenderer` repaint a LATE fill (one that happened after a
 /// scribble already covered it) without bleeding into a differently-shaped
 /// region stacked on top (the M3 crayon-layering fix — see its doc comment
-/// on `image(...)`).
-private func visibleRegionAreaMask(regionIndex: Int, template: CBNTemplate) -> CGPath {
+/// on `image(...)`), and `InkCoverage`'s occluded-vs-merely-tiny arbiter
+/// for regions that rasterize to no pixels at measurement scale.
+func visibleRegionAreaMask(regionIndex: Int, template: CBNTemplate) -> CGPath {
     let regions = template.regions
     guard regionIndex < regions.count, regions[regionIndex].path.count >= 3 else {
         return CGMutablePath()
@@ -58,13 +59,15 @@ private func visibleRegionAreaMask(regionIndex: Int, template: CBNTemplate) -> C
 ///
 /// Why a renderer of our own instead of one `PKDrawing.image(...)` call:
 /// boundary-assist's promise is pixel-level — ink may not PAINT past the
-/// outline — but the stored strokes only guarantee their CENTER line stays
-/// inside (StrokeClipper), so half the ink width blooms over the edge when
-/// rendered raw. PKStroke.mask looked purpose-built for this and simply
-/// does not apply in `PKDrawing.image()` rendering (verified empirically:
-/// pixel-identical output with and without masks — see the M3 bloom fix).
-/// So the clip happens here, in plain CGContext, where the semantics are
-/// certain.
+/// outline — and this renderer's paint mask is that promise's SOLE
+/// enforcement: the stored strokes are the child's gestures verbatim
+/// (GestureLanding lands them unmodified, so the dried ink is exactly what
+/// the live BoundaryMask showed — the wet/dry fidelity fix; rendered raw
+/// they'd paint past every outline they crossed). PKStroke.mask looked
+/// purpose-built for this and simply does not apply in `PKDrawing.image()`
+/// rendering (verified empirically: pixel-identical output with and without
+/// masks — see the M3 bloom fix). So the clip happens here, in plain
+/// CGContext, where the semantics are certain.
 ///
 /// Which strokes get clipped, and to which crayon's regions? The action
 /// log: stroke gestures appear in it in the same order their sub-strokes
@@ -100,15 +103,15 @@ enum CommittedInkRenderer {
     /// `template.size × scale` points at `screenScale` — nil when there is
     /// nothing to draw. Drawings and masks are all in template space, so
     /// callers only choose an output scale; registration is inherent.
-    /// `filledRegionIDs` is the attempt's ORDERED fill list — its count
-    /// always equals the log's `.fill` entry count, in the same order
-    /// (invariant documented on `CBNAttempt.effectiveActionLog`) — which is
-    /// what lets this walk recover each `.fill` entry's region without
-    /// storing anything extra in the log itself.
+    /// `tapFillRegionIDs` is the attempt's ORDERED tap-fill paint record —
+    /// its count always equals the log's `.fill` entry count, in the same
+    /// order (invariant documented on `CBNAttempt.tapFillRegionIDs`) —
+    /// which is what lets this walk recover each `.fill` entry's region
+    /// without storing anything extra in the log itself.
     static func image(
         drawing: PKDrawing,
         actionLog: [CBNAttemptAction],
-        filledRegionIDs: [String],
+        tapFillRegionIDs: [String],
         template: CBNTemplate,
         scale: CGFloat,
         screenScale: CGFloat = 1
@@ -147,8 +150,8 @@ enum CommittedInkRenderer {
                 if case .fill = entry {
                     let index = fillIndex
                     fillIndex += 1
-                    guard strokesSeen > 0, index < filledRegionIDs.count,
-                          let regionIndex = regionIndexByID[filledRegionIDs[index]]
+                    guard strokesSeen > 0, index < tapFillRegionIDs.count,
+                          let regionIndex = regionIndexByID[tapFillRegionIDs[index]]
                     else { continue }
                     let region = template.regions[regionIndex]
                     guard region.path.count >= 3,
@@ -249,5 +252,61 @@ enum CommittedInkRenderer {
             }
         }
         return best?.number
+    }
+}
+
+/// The one honest-thumbnail recipe, shared by every card and row that shows
+/// "what this attempt currently looks like" — `TemplateRenderer`'s
+/// outline+fills bitmap, with the attempt's committed ink composited on top
+/// via `CommittedInkRenderer` exactly as `CanvasView` layers them live.
+/// Extracted from what was originally `StudioView.renderThumbnail` (M2) so
+/// the M4 Workshop's Pictures rows and attempts ring (WorkshopView.swift)
+/// can render archived-attempt thumbnails through the SAME code path rather
+/// than inventing a second, divergent recipe that could quietly drift out
+/// of sync — DESIGN.md's honest-thumbnail rule applies just as much to a
+/// parent reviewing an archived version as it does to the Studio grid.
+@MainActor
+enum ThumbnailRenderer {
+    /// `nil` when the template itself fails to rasterize (should not happen
+    /// for a template already living in the library, but this mirrors
+    /// `StudioView`'s original defensiveness rather than force-unwrapping).
+    /// `attempt` is optional so a not-yet-loaded state can ask for a bare
+    /// outline the same way `StudioView.loadItems` already tolerates a
+    /// missing `latestAttempt`.
+    static func image(template: CBNTemplate, attempt: CBNAttempt?, targetWidth: CGFloat) -> UIImage? {
+        let scale = targetWidth / max(template.size.width, 1)
+        guard let cgImage = TemplateRenderer.render(
+            template, mode: .outline, scale: scale, tapFillRegionIDs: Set(attempt?.tapFillRegionIDs ?? [])
+        ) else { return nil }
+
+        guard let data = attempt?.drawingData,
+              let drawing = try? PKDrawing(data: data),
+              // Same bloom-fix renderer as the live canvas — a fills-only
+              // shortcut here would show a drawing-less lie for any attempt
+              // that actually has ink (the M4 spec's explicit requirement
+              // for the attempts ring below).
+              let strokesImage = CommittedInkRenderer.image(
+                  drawing: drawing,
+                  actionLog: attempt?.actionLog ?? [],
+                  tapFillRegionIDs: attempt?.tapFillRegionIDs ?? [],
+                  template: template,
+                  scale: scale
+              )
+        else {
+            return UIImage(cgImage: cgImage)
+        }
+
+        let pixelSize = CGSize(width: cgImage.width, height: cgImage.height)
+        // Same UIKit-`draw(in:)` compositing rationale as the original
+        // `StudioView.renderThumbnail` doc comment: both source images are
+        // top-left-origin, UIKit-convention images, and mixing in the raw
+        // CGContext API here would flip one layer relative to the other.
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
+        return renderer.image { _ in
+            UIImage(cgImage: cgImage).draw(in: CGRect(origin: .zero, size: pixelSize))
+            strokesImage.draw(in: CGRect(origin: .zero, size: pixelSize))
+        }
     }
 }

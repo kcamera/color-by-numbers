@@ -5,7 +5,11 @@ import Foundation
 ///
 /// A template never changes during play — coloring progress lives in
 /// per-attempt state (arriving in M2/M3), which is what makes "color it
-/// again" additive and the Studio safe by construction.
+/// again" additive and the Studio safe by construction. The one sanctioned
+/// exception is the Workshop's rename (M4, `CBNLibrary.renameItem`): editing
+/// `title` in place, parent-zone only, after import — it never touches
+/// anything a child's in-progress attempt depends on (regions, palette,
+/// geometry all stay fixed).
 public struct CBNTemplate: Codable, Equatable, Sendable {
     /// Bumped only when the on-disk JSON layout changes incompatibly.
     public var schemaVersion: Int

@@ -118,85 +118,53 @@ private func region(ofHex hex: String, in template: CBNTemplate) -> CBNRegion {
 
 // MARK: - CBNAttempt
 
-/// A minimal two-region template, hand-authored (no pipeline needed) —
-/// `CBNAttempt.isComplete` only cares about region ids.
-private func twoRegionTemplate() -> CBNTemplate {
-    CBNTemplate(
-        title: "Two Regions",
-        size: CBNSize(width: 10, height: 10),
-        palette: [CBNPaletteEntry(number: 1, name: "Red", hex: "#FF0000")],
-        regions: [
-            CBNRegion(
-                id: "r0", colorNumber: 1,
-                path: [CBNPoint(x: 0, y: 0), CBNPoint(x: 5, y: 0), CBNPoint(x: 5, y: 5), CBNPoint(x: 0, y: 5)],
-                labelPoint: CBNPoint(x: 2, y: 2)
-            ),
-            CBNRegion(
-                id: "r1", colorNumber: 1,
-                path: [CBNPoint(x: 5, y: 5), CBNPoint(x: 10, y: 5), CBNPoint(x: 10, y: 10), CBNPoint(x: 5, y: 10)],
-                labelPoint: CBNPoint(x: 7, y: 7)
-            ),
-        ]
-    )
-}
-
 @Test func attemptFillAppendsInOrder() {
     var attempt = CBNAttempt()
-    attempt.fill("r0")
-    attempt.fill("r1")
-    #expect(attempt.filledRegionIDs == ["r0", "r1"])
+    attempt.recordTapFill("r0")
+    attempt.recordTapFill("r1")
+    #expect(attempt.tapFillRegionIDs == ["r0", "r1"])
 }
 
 @Test func attemptDoubleFillOfSameIDIsANoOp() {
     var attempt = CBNAttempt()
-    attempt.fill("r0")
+    attempt.recordTapFill("r0")
     let afterFirstFill = attempt.updatedAt
-    attempt.fill("r0")
-    #expect(attempt.filledRegionIDs == ["r0"])
+    attempt.recordTapFill("r0")
+    #expect(attempt.tapFillRegionIDs == ["r0"])
     #expect(attempt.updatedAt == afterFirstFill)
 }
 
-@Test func attemptUndoLastFillRemovesOnlyTheLast() {
+@Test func attemptUndoLastTapFillRemovesOnlyTheLast() {
     var attempt = CBNAttempt()
-    attempt.fill("r0")
-    attempt.fill("r1")
-    attempt.undoLastFill()
-    #expect(attempt.filledRegionIDs == ["r0"])
+    attempt.recordTapFill("r0")
+    attempt.recordTapFill("r1")
+    attempt.undoLastTapFill()
+    #expect(attempt.tapFillRegionIDs == ["r0"])
 }
 
-@Test func attemptUndoLastFillOnEmptyAttemptIsANoOp() {
+@Test func attemptUndoLastTapFillOnEmptyAttemptIsANoOp() {
     var attempt = CBNAttempt()
-    attempt.undoLastFill()
-    #expect(attempt.filledRegionIDs.isEmpty)
+    attempt.undoLastTapFill()
+    #expect(attempt.tapFillRegionIDs.isEmpty)
 }
 
-@Test func attemptIsFilledReflectsFillState() {
+@Test func attemptHasTapFillReflectsTapFills() {
     var attempt = CBNAttempt()
-    #expect(!attempt.isFilled("r0"))
-    attempt.fill("r0")
-    #expect(attempt.isFilled("r0"))
-    #expect(!attempt.isFilled("r1"))
-}
-
-@Test func attemptIsCompleteFlipsExactlyWhenEveryRegionIsFilled() {
-    let template = twoRegionTemplate()
-    var attempt = CBNAttempt()
-    #expect(!attempt.isComplete(for: template))
-    attempt.fill("r0")
-    #expect(!attempt.isComplete(for: template))
-    attempt.fill("r1")
-    #expect(attempt.isComplete(for: template))
+    #expect(!attempt.hasTapFill("r0"))
+    attempt.recordTapFill("r0")
+    #expect(attempt.hasTapFill("r0"))
+    #expect(!attempt.hasTapFill("r1"))
 }
 
 @Test func attemptFillAndUndoBumpUpdatedAt() {
     var attempt = CBNAttempt()
     let created = attempt.updatedAt
 
-    attempt.fill("r0")
+    attempt.recordTapFill("r0")
     #expect(attempt.updatedAt > created)
     let afterFill = attempt.updatedAt
 
-    attempt.undoLastFill()
+    attempt.undoLastTapFill()
     #expect(attempt.updatedAt > afterFill)
 }
 
@@ -215,32 +183,11 @@ private func twoRegionTemplate() -> CBNTemplate {
     #expect(attempt.updatedAt > afterFirstSet)
 }
 
-/// A raw v1 attempt JSON — exactly what M2 wrote to real iPads, before
-/// `drawingData` existed: id/createdAt/updatedAt/filledRegionIDs only,
-/// ISO-8601 whole-second dates, sorted keys (matching `CBNLibrary`'s
-/// encoder). Those devices' on-disk attempts must keep decoding forever;
-/// this fixture is the regression guard for that promise.
-private let v1AttemptJSON = """
-{"createdAt":"2026-01-01T00:00:00Z","filledRegionIDs":["r0"],"id":"v1-attempt","updatedAt":"2026-01-01T00:00:05Z"}
-"""
-
-@Test func attemptDecodesV1JSONMissingDrawingDataAsNil() throws {
-    let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .iso8601
-    let attempt = try decoder.decode(CBNAttempt.self, from: Data(v1AttemptJSON.utf8))
-
-    #expect(attempt.id == "v1-attempt")
-    #expect(attempt.filledRegionIDs == ["r0"])
-    #expect(attempt.drawingData == nil)
-}
-
 // MARK: - CBNAttempt.actionLog (M3 interleaved undo)
 
-/// The action strings are a persistence contract: "fill" and "stroke" are
-/// already on real iPads from early M3, and "strokes:N" joins them for
-/// boundary-assist's clipped gestures. All three must decode; the
-/// single-sub-stroke case must keep ENCODING as the legacy "stroke" so
-/// freehand-only attempts stay byte-identical.
+/// The action strings are the log's persistence encoding: "fill",
+/// "stroke" (the compact single-sub-stroke spelling, which is also what
+/// one sub-stroke must ENCODE back to), "strokes:N", and "clipped:N".
 @Test func attemptActionStringsRoundTripAllThreeSpellings() throws {
     let decoder = JSONDecoder()
     let decoded = try decoder.decode(
@@ -266,77 +213,65 @@ private let v1AttemptJSON = """
 /// the single log entry).
 @Test func attemptMultiSubstrokeGestureLogsOnceAndUndoesOnce() {
     var attempt = CBNAttempt()
-    attempt.fill("r0")
+    attempt.recordTapFill("r0")
     attempt.recordStroke(Data([0x01]), substrokes: 3, clipped: true)
-    #expect(attempt.effectiveActionLog == [.fill, .clippedStrokes(3)])
-    #expect(attempt.effectiveActionLog.last?.substrokeCount == 3)
-    #expect(attempt.effectiveActionLog.last?.isStrokeGesture == true)
+    #expect(attempt.actionLog == [.fill, .clippedStrokes(3)])
+    #expect(attempt.actionLog.last?.substrokeCount == 3)
+    #expect(attempt.actionLog.last?.isStrokeGesture == true)
 
     attempt.undoLastStroke(updatedDrawing: nil)
-    #expect(attempt.effectiveActionLog == [.fill])
+    #expect(attempt.actionLog == [.fill])
     #expect(attempt.drawingData == nil)
 }
 
-/// Same v1 fixture as above, missing `actionLog` entirely (it predates the
-/// field just as much as `drawingData` does): decodes with a nil stored log,
-/// and `effectiveActionLog` must reconstruct the only history a pre-log
-/// attempt could have — one `.fill` per filled region, in order.
-@Test func attemptDecodesV1JSONMissingActionLogAsNilWithReconstructedEffectiveLog() throws {
-    let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .iso8601
-    let attempt = try decoder.decode(CBNAttempt.self, from: Data(v1AttemptJSON.utf8))
+/// A brand-new attempt starts with an empty log — no fills, no strokes, no
+/// history yet — and an attempt built with pre-seeded tap fills (tests,
+/// tooling) gets the matching all-`.fill` log the 1:1 invariant requires.
+@Test func attemptFreshActionLogIsEmptyAndSeededFillsGetMatchingLog() {
+    #expect(CBNAttempt().actionLog.isEmpty)
 
-    #expect(attempt.actionLog == nil)
-    #expect(attempt.effectiveActionLog == [.fill])
-}
-
-/// A brand-new attempt also starts with a nil stored log (materialized only
-/// on first touch) but an empty effective one — no fills, no strokes, no
-/// history yet.
-@Test func attemptFreshEffectiveActionLogIsEmpty() {
-    let attempt = CBNAttempt()
-    #expect(attempt.actionLog == nil)
-    #expect(attempt.effectiveActionLog.isEmpty)
+    let seeded = CBNAttempt(tapFillRegionIDs: ["r0", "r1"])
+    #expect(seeded.actionLog == [.fill, .fill])
 }
 
 /// The whole point of the log: fills and strokes interleaved must come back
 /// out in the exact order they happened, not grouped by kind.
 @Test func attemptInterleavedFillAndStrokeLogPreservesOrder() {
     var attempt = CBNAttempt()
-    attempt.fill("r0")
+    attempt.recordTapFill("r0")
     attempt.recordStroke(Data([0x01]))
-    attempt.fill("r1")
+    attempt.recordTapFill("r1")
 
-    #expect(attempt.effectiveActionLog == [.fill, .stroke, .fill])
-    #expect(attempt.filledRegionIDs == ["r0", "r1"])
+    #expect(attempt.actionLog == [.fill, .stroke, .fill])
+    #expect(attempt.tapFillRegionIDs == ["r0", "r1"])
     #expect(attempt.drawingData == Data([0x01]))
 }
 
-/// `undoLastFill` pops the log's trailing entry along with the region,
+/// `undoLastTapFill` pops the log's trailing entry along with the region,
 /// leaving the stroke in between untouched.
-@Test func attemptUndoLastFillPopsTrailingLogEntry() {
+@Test func attemptUndoLastTapFillPopsTrailingLogEntry() {
     var attempt = CBNAttempt()
-    attempt.fill("r0")
+    attempt.recordTapFill("r0")
     attempt.recordStroke(Data([0x01]))
-    attempt.fill("r1")
+    attempt.recordTapFill("r1")
 
-    attempt.undoLastFill()
+    attempt.undoLastTapFill()
 
-    #expect(attempt.filledRegionIDs == ["r0"])
-    #expect(attempt.effectiveActionLog == [.fill, .stroke])
+    #expect(attempt.tapFillRegionIDs == ["r0"])
+    #expect(attempt.actionLog == [.fill, .stroke])
 }
 
 /// `undoLastStroke` pops the log's trailing entry and installs the caller's
 /// re-serialized drawing (here, `nil` — the caller removed the only stroke).
 @Test func attemptUndoLastStrokePopsTrailingLogEntryAndAssignsDrawing() {
     var attempt = CBNAttempt()
-    attempt.fill("r0")
+    attempt.recordTapFill("r0")
     attempt.recordStroke(Data([0x01, 0x02]))
 
     attempt.undoLastStroke(updatedDrawing: nil)
 
     #expect(attempt.drawingData == nil)
-    #expect(attempt.effectiveActionLog == [.fill])
+    #expect(attempt.actionLog == [.fill])
 }
 
 /// `recordStroke` bumps `updatedAt` monotonically, mirroring `fill`.
@@ -361,14 +296,14 @@ private let v1AttemptJSON = """
     // -break to fall back to comparing UUIDs (a coin flip, not this test's
     // concern).
     var attempt = CBNAttempt()
-    attempt.fill("r0")
+    attempt.recordTapFill("r0")
     attempt.recordStroke(Data([0xDE, 0xAD, 0xBE, 0xEF]))
     attempt.updatedAt = Date().addingTimeInterval(60)
     try library.saveAttempt(attempt, in: item.id)
 
     let latest = try library.latestAttempt(in: item.id)
     #expect(latest?.drawingData == Data([0xDE, 0xAD, 0xBE, 0xEF]))
-    #expect(latest?.effectiveActionLog == [.fill, .stroke])
+    #expect(latest?.actionLog == [.fill, .stroke])
 }
 
 // MARK: - CBNLibrary
@@ -436,7 +371,7 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     // filling — otherwise `fill` would clobber it right back to "now" and
     // reintroduce the exact race this is trying to avoid.
     var attempt = CBNAttempt()
-    attempt.fill("r0")
+    attempt.recordTapFill("r0")
     attempt.updatedAt = Date().addingTimeInterval(60)
     try library.saveAttempt(attempt, in: item.id)
 
@@ -446,7 +381,7 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     // what actually matter here.
     let latest = try library.latestAttempt(in: item.id)
     #expect(latest?.id == attempt.id)
-    #expect(latest?.filledRegionIDs == attempt.filledRegionIDs)
+    #expect(latest?.tapFillRegionIDs == attempt.tapFillRegionIDs)
     #expect(abs((latest?.updatedAt ?? .distantPast).timeIntervalSince(attempt.updatedAt)) < 1)
 }
 
@@ -479,7 +414,11 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     let item = try library.add(sampleTemplate(title: "Replayed"))
     let seeded = try library.latestAttempt(in: item.id)!
 
-    let now = Date()
+    // Strictly after the seeded attempt's whole-second timestamp — landing
+    // "middle" in the seeded attempt's encoded second would tie createdAt
+    // AND updatedAt, pushing the comparison down to the id tie-break, which
+    // is deterministic but not what this test is about.
+    let now = Date().addingTimeInterval(5)
     let middle = CBNAttempt(id: "middle", createdAt: now, updatedAt: now)
     let newest = CBNAttempt(
         id: "newest",
@@ -499,13 +438,13 @@ private func sampleTemplate(title: String) -> CBNTemplate {
 
     let item = try library.add(sampleTemplate(title: "Again"))
     var priorAttempt = try library.latestAttempt(in: item.id)!
-    priorAttempt.fill("r0")
+    priorAttempt.recordTapFill("r0")
     try library.saveAttempt(priorAttempt, in: item.id)
 
     let fresh = try library.newAttempt(in: item.id)
 
     #expect(fresh.id != priorAttempt.id)
-    #expect(fresh.filledRegionIDs.isEmpty)
+    #expect(fresh.tapFillRegionIDs.isEmpty)
 
     // `newAttempt` must win even when it lands in the same encoded
     // wall-clock second as the prior attempt's `updatedAt` — the whole
@@ -518,7 +457,7 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     let all = try library.attempts(in: item.id)
     #expect(all.count == 2)
     let stillThere = all.first { $0.id == priorAttempt.id }
-    #expect(stillThere?.filledRegionIDs == ["r0"])
+    #expect(stillThere?.tapFillRegionIDs == ["r0"])
 }
 
 /// Forces the same-second collision rather than hoping to dodge it: several
@@ -532,12 +471,12 @@ private func sampleTemplate(title: String) -> CBNTemplate {
 
     let item = try library.add(sampleTemplate(title: "Rapid"))
     var first = try library.latestAttempt(in: item.id)!
-    first.fill("r0")
+    first.recordTapFill("r0")
     try library.saveAttempt(first, in: item.id)
 
     let second = try library.newAttempt(in: item.id)
     var secondFilled = second
-    secondFilled.fill("r0")
+    secondFilled.recordTapFill("r0")
     try library.saveAttempt(secondFilled, in: item.id)
 
     let third = try library.newAttempt(in: item.id)
@@ -581,7 +520,7 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     var archivedIDs: [String] = []
     for cycle in 1...5 {
         var current = try library.latestAttempt(in: item.id)!
-        current.fill("r\(cycle)")
+        current.recordTapFill("r\(cycle)")
         try library.saveAttempt(current, in: item.id)
         archivedIDs.append(current.id)
         try library.newAttempt(in: item.id)
@@ -631,4 +570,127 @@ private func sampleTemplate(title: String) -> CBNTemplate {
     let items = try library.items()
     #expect(items.count == 1)
     #expect(items[0].template.title == "Real")
+}
+
+// MARK: - CBNLibrary management APIs (M4 Workshop verbs)
+
+@Test func libraryDeleteItemRemovesItemDirectory() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let kept = try library.add(sampleTemplate(title: "Keep"))
+    let doomed = try library.add(sampleTemplate(title: "Doomed"))
+    let doomedDirectory = root.appendingPathComponent(doomed.id, isDirectory: true)
+    #expect(FileManager.default.fileExists(atPath: doomedDirectory.path))
+
+    try library.deleteItem(doomed.id)
+
+    #expect(!FileManager.default.fileExists(atPath: doomedDirectory.path))
+    let remaining = try library.items()
+    #expect(remaining.map(\.id) == [kept.id])
+}
+
+/// Housekeeping idempotency (DESIGN.md keeps destruction out of kid space,
+/// but even in the Workshop a double-tap or a stale list must never throw).
+@Test func libraryDeleteItemOnMissingItemIsANoOp() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try library.deleteItem("never-existed")
+}
+
+@Test func libraryRenameItemRoundTripsThroughItems() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Old Name"))
+    try library.renameItem(item.id, title: "New Name")
+
+    let items = try library.items()
+    #expect(items.count == 1)
+    #expect(items[0].id == item.id)
+    #expect(items[0].template.title == "New Name")
+    // Everything else about the template is untouched by a rename.
+    #expect(items[0].template.regions == item.template.regions)
+    #expect(items[0].template.palette == item.template.palette)
+}
+
+@Test func libraryRenameItemOnMissingItemThrows() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    #expect(throws: (any Error).self) {
+        try library.renameItem("never-existed", title: "Anything")
+    }
+}
+
+@Test func libraryDeleteAttemptRefusesToDeleteTheLatestAttempt() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Live Work"))
+    let seeded = try library.latestAttempt(in: item.id)!
+
+    #expect(throws: CBNLibraryError.cannotDeleteLatestAttempt(attemptID: seeded.id, itemID: item.id)) {
+        try library.deleteAttempt(seeded.id, in: item.id)
+    }
+    // The refusal must not have removed anything.
+    #expect(try library.attempts(in: item.id).count == 1)
+}
+
+@Test func libraryDeleteAttemptRemovesAnArchivedAttempt() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Archive Me"))
+    var toArchive = try library.latestAttempt(in: item.id)!
+    toArchive.recordTapFill("r0")
+    try library.saveAttempt(toArchive, in: item.id)
+    let fresh = try library.newAttempt(in: item.id) // archives `toArchive`
+
+    #expect(try library.attempts(in: item.id).map(\.id).sorted() == [toArchive.id, fresh.id].sorted())
+
+    try library.deleteAttempt(toArchive.id, in: item.id)
+
+    let remaining = try library.attempts(in: item.id)
+    #expect(remaining.map(\.id) == [fresh.id])
+}
+
+@Test func libraryDeleteAttemptOnMissingAttemptIsANoOp() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Solo"))
+    try library.deleteAttempt("never-existed", in: item.id)
+    #expect(try library.attempts(in: item.id).count == 1)
+}
+
+/// The Workshop's "restore": an archived attempt comes back as a brand-new
+/// CURRENT attempt with the same coloring content, while the archived
+/// source is left exactly where it was (restoring is additive, not a move).
+@Test func libraryRestoreAttemptBecomesLatestWithContentIntactAndSourceStillPresent() throws {
+    let (library, root) = makeTempLibrary()
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let item = try library.add(sampleTemplate(title: "Restore Me"))
+    var archived = try library.latestAttempt(in: item.id)!
+    archived.recordTapFill("r0")
+    archived.recordStroke(Data([0xAB, 0xCD]))
+    try library.saveAttempt(archived, in: item.id)
+    try library.newAttempt(in: item.id) // archives `archived`, current becomes pristine
+
+    let restored = try library.restoreAttempt(archived.id, in: item.id)
+
+    // A genuinely new attempt, not the archived one reused.
+    #expect(restored.id != archived.id)
+    // Content copied verbatim.
+    #expect(restored.tapFillRegionIDs == archived.tapFillRegionIDs)
+    #expect(restored.drawingData == archived.drawingData)
+    #expect(restored.actionLog == archived.actionLog)
+    // It's the new current attempt.
+    #expect(try library.latestAttempt(in: item.id)?.id == restored.id)
+    // The archived source is untouched and still on disk.
+    let all = try library.attempts(in: item.id)
+    let stillArchived = all.first { $0.id == archived.id }
+    #expect(stillArchived?.tapFillRegionIDs == archived.tapFillRegionIDs)
 }

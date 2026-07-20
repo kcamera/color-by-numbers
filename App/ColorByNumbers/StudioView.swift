@@ -24,12 +24,18 @@ struct StudioView: View {
     /// misses and gets regenerated, so returning from the canvas refreshes
     /// exactly the cards that changed and nothing else.
     @State private var thumbnails: [ThumbnailKey: Image] = [:]
+    /// Whether the Workshop door's full-screen cover is up. Its content is
+    /// a single `WorkshopDoor` instance (below) that internally swaps Gate
+    /// for Workshop on a correct code — a fresh instance every presentation
+    /// means the Gate always starts locked again, never remembering a
+    /// previous session's unlock.
+    @State private var showingWorkshop = false
 
     /// Identifies "this item's thumbnail as of this attempt state." Two
     /// fields, not one, because the template alone never changes (immutable
-    /// per CBNTemplate's doc comment) but the attempt does on every fill —
-    /// `updatedAt` is the cheap, already-persisted proxy for "the fills
-    /// changed" without diffing `filledRegionIDs` arrays.
+    /// per CBNTemplate's doc comment) but the attempt does on every mark —
+    /// `updatedAt` is the cheap, already-persisted proxy for "the paint
+    /// changed" without diffing `tapFillRegionIDs` arrays or drawing blobs.
     private struct ThumbnailKey: Hashable {
         let itemID: String
         let attemptUpdatedAt: Date
@@ -62,6 +68,19 @@ struct StudioView: View {
                     }
                     .padding(32)
                 }
+
+                // The Workshop door (DESIGN.md's agency model: ONE parental
+                // gate). Top-trailing, same white "material" as every other
+                // quiet control here, but no color and no badge — it must
+                // read as furniture, not a toy inviting a tap.
+                VStack {
+                    HStack {
+                        Spacer()
+                        WorkshopDoorControl { showingWorkshop = true }
+                    }
+                    Spacer()
+                }
+                .padding(24)
             }
             .toolbar(.hidden, for: .navigationBar)
             // `.onAppear` rather than `.task`, and on the stack's root
@@ -73,6 +92,23 @@ struct StudioView: View {
             // exact "re-check on return" moment this reload exists for.
             .onAppear {
                 loadItems()
+            }
+            // Full-screen rather than a sheet: the app is landscape-only
+            // (Fixed constraints, DESIGN.md), so there's no compact-width
+            // sheet presentation to prefer, and the Workshop is a wholly
+            // separate "room" from the Studio, not a peek-and-pop panel.
+            .fullScreenCover(isPresented: $showingWorkshop) {
+                WorkshopDoor(library: library)
+            }
+            // A cover dismissal does NOT re-fire the content's `.onAppear`
+            // (unlike a navigation pop — the content never "disappeared"),
+            // so returning from the Workshop needs its own reload: imports
+            // add cards, management renames/deletes them, and the grid must
+            // reflect all of it the moment the cover drops.
+            .onChange(of: showingWorkshop) { _, isShowing in
+                if !isShowing {
+                    loadItems()
+                }
             }
         }
     }
@@ -100,63 +136,62 @@ struct StudioView: View {
         }
     }
 
-    /// Renders the outline-and-fills bitmap (`TemplateRenderer`), then, if
-    /// the attempt has a drawing, composites her strokes on top — DESIGN.md's
-    /// honest-thumbnail rule: the Studio grid must reflect what she actually
-    /// drew, not just where she tapped. Strokes persist in TEMPLATE
-    /// coordinates (see `FitTransform.viewToTemplateTransform`'s doc comment,
-    /// CanvasView.swift), so `PKDrawing.image(from:scale:)` at this same
-    /// `scale` lines up with `TemplateRenderer`'s bitmap pixel-for-pixel —
-    /// no view-space transform needed, unlike the live canvas. Cache
-    /// invalidation needs no changes here: `ThumbnailKey` is keyed on
-    /// `updatedAt`, and `recordStroke` already bumps that exactly like
-    /// `fill` does, so a stroke-only change still misses the cache.
+    /// Renders the outline-and-fills-and-ink bitmap via the shared
+    /// `ThumbnailRenderer` (CommittedInk.swift) — DESIGN.md's honest-
+    /// thumbnail rule: the Studio grid must reflect what she actually drew,
+    /// not just where she tapped. Cache invalidation needs no changes here:
+    /// `ThumbnailKey` is keyed on `updatedAt`, and `recordStroke` already
+    /// bumps that exactly like `fill` does, so a stroke-only change still
+    /// misses the cache.
     private func renderThumbnail(for item: CBNLibraryItem, attempt: CBNAttempt?, key: ThumbnailKey) {
-        let targetWidth = 360.0
-        let scale = targetWidth / max(item.template.size.width, 1)
-        // `.outline` + `filledRegionIDs`: the in-progress face of
-        // TemplateRenderer (see its doc comment) — the same appearance the
-        // child sees on the canvas, baked to a bitmap for the grid.
-        guard let cgImage = TemplateRenderer.render(
-            item.template, mode: .outline, scale: scale, filledRegionIDs: Set(attempt?.filledRegionIDs ?? [])
-        ) else { return }
+        guard let uiImage = ThumbnailRenderer.image(template: item.template, attempt: attempt, targetWidth: 360)
+        else { return }
+        thumbnails[key] = Image(uiImage: uiImage)
+    }
+}
 
-        guard let data = attempt?.drawingData,
-              let drawing = try? PKDrawing(data: data),
-              // The shared renderer applies boundary-assist's paint clip
-              // per gesture (CommittedInkRenderer) — the thumbnail must
-              // show exactly what the canvas shows, bloom included-out.
-              let strokesImage = CommittedInkRenderer.image(
-                  drawing: drawing,
-                  actionLog: attempt?.effectiveActionLog ?? [],
-                  filledRegionIDs: attempt?.filledRegionIDs ?? [],
-                  template: item.template,
-                  scale: scale
-              )
-        else {
-            thumbnails[key] = Image(decorative: cgImage, scale: 1)
-            return
+/// The Workshop door itself: a quiet, colorless control that reads as
+/// furniture rather than a toy — `wrench.and.screwdriver` is a placeholder
+/// (M6 polish owns the real icon). Same white "material" fill as every
+/// other quiet control in the app (`BackControl`, `UndoControl`, etc., in
+/// CanvasView.swift).
+private struct WorkshopDoorControl: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "wrench.and.screwdriver")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(DeskStyle.inkColor)
+                .frame(width: 56, height: 56)
+                .background(Circle().fill(Color.white.opacity(0.7)))
         }
+        .buttonStyle(.plain)
+        // Spoken name for VoiceOver; also the UI-test driver's handle.
+        .accessibilityLabel("Workshop")
+    }
+}
 
-        let pixelSize = CGSize(width: cgImage.width, height: cgImage.height)
+/// Bridges the door's two stops — Gate, then Workshop — inside ONE
+/// full-screen cover. Unlocking swaps content in place (a local `@State`
+/// flip) rather than dismissing the Gate's cover to present a second one:
+/// back-to-back full-screen covers from the same presenter fight each
+/// other on iOS, and this sidesteps that entirely. Because a fresh instance
+/// of this view is created every time `showingWorkshop` above flips true,
+/// `unlocked` always starts `false` — dismissing the Gate without the code,
+/// or leaving the Workshop, both return here to a locked door next time
+/// (DESIGN.md: ONE parental gate, no way to linger past it unlocked).
+private struct WorkshopDoor: View {
+    let library: CBNLibrary
 
-        // Compositing with UIKit's own `draw(in:)`, never the raw
-        // CGContext `draw(_:in:)`: both source images (TemplateRenderer's
-        // CGImage and PencilKit's `drawing.image`) are already top-left-
-        // origin, UIKit-convention images, and `UIGraphicsImageRenderer`'s
-        // context is likewise flipped to match UIKit — drawing through
-        // UIImage keeps that convention consistent throughout. The raw
-        // CGContext API expects bottom-left-origin CGImages and would
-        // silently flip one layer relative to the other. Verified visually
-        // (see .claude/skills/verify) rather than assumed.
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
-        let composited = renderer.image { _ in
-            UIImage(cgImage: cgImage).draw(in: CGRect(origin: .zero, size: pixelSize))
-            strokesImage.draw(in: CGRect(origin: .zero, size: pixelSize))
+    @State private var unlocked = false
+
+    var body: some View {
+        if unlocked {
+            WorkshopView(library: library)
+        } else {
+            WorkshopGateView(onUnlocked: { unlocked = true })
         }
-        thumbnails[key] = Image(uiImage: composited)
     }
 }
 
@@ -198,6 +233,8 @@ private struct TemplateCard: View {
     }
 }
 
+#if DEBUG
 #Preview(traits: .landscapeLeft) {
     StudioView(library: previewLibrary(seeding: [.previewSample]))
 }
+#endif

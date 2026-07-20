@@ -54,30 +54,21 @@ struct SuggestCommand: ParsableCommand {
     var cellWidth: Int = 420
 
     // MARK: - The candidate grid and selection thresholds (prototype knobs)
+    //
+    // The grid, slack constants, and per-region measurement are the same
+    // ones `ImportInference.inferredParameters` uses for the app's two live
+    // knobs — shared from CBNKit (`package`-visible) so this wider sweep
+    // can't quietly drift from what the app actually infers. Only this
+    // command's own dealing/distinctness logic (turning a full sweep into
+    // up to three named cards) is prototype-local.
 
     /// Floor tiers, finest first. Detail is pinned at 1.0 (DORMANT — lower
     /// values only facet boundaries; the parameter is slated for removal,
     /// see ImportParameters.detail).
-    private static let tiers: [(mm: Double, detail: Double)] = [
-        (3, 1.0), (5, 1.0), (8, 1.0), (12, 1.0),
-    ]
-    private static let colorCandidates = [6, 8, 10, 12, 16]
+    private static let tiers: [(mm: Double, detail: Double)] =
+        ImportInference.minRegionMMTiers.map { ($0, 1.0) }
+    private static let colorCandidates = ImportInference.colorCandidates
 
-    /// "Within 15% (and half a ΔE) of the 16-color error" defines the
-    /// fidelity elbow — the image's natural color count.
-    private static let fidelitySlackRatio = 1.15
-    private static let fidelitySlackAbsolute = 0.5
-    /// A region hugging the floor — within this many mm above it — counts
-    /// as dust; a cell where more than a third of regions are dust flunks
-    /// (noise promoted into regions, not features). An absolute band, not
-    /// a multiple: at a 12mm floor, a 15mm region is a perfectly good
-    /// colorable region, but a 13mm one right at the cut line is usually a
-    /// fragment that barely dodged the merge.
-    private static let dustBandMM = 1.5
-    private static let maxDustShare = 0.35
-    /// Sanity bounds on a colorable template.
-    private static let minRegions = 4
-    private static let maxRegions = 200
     /// Adjacent dealt cards must differ by ≥30% in region count, or the
     /// less interesting one is dropped.
     private static let distinctnessRatio = 1.3
@@ -97,9 +88,9 @@ struct SuggestCommand: ParsableCommand {
         var detail: Double { SuggestCommand.tiers[tierIndex].detail }
 
         var isViable: Bool {
-            regionCount >= SuggestCommand.minRegions
-                && regionCount <= SuggestCommand.maxRegions
-                && dustShare <= SuggestCommand.maxDustShare
+            regionCount >= ImportInference.minRegions
+                && regionCount <= ImportInference.maxRegions
+                && dustShare <= ImportInference.maxDustShare
         }
 
         var summary: String {
@@ -185,7 +176,7 @@ struct SuggestCommand: ParsableCommand {
             let imageCells = (0..<cellsPerImage).compactMap {
                 cells[imageIndex * cellsPerImage + $0]
             }
-            let naturalColors = Self.inferNaturalColors(curve: curve)
+            let naturalColors = ImportInference.inferNaturalColors(curve: curve)
             let cards = Self.deal(cells: imageCells, naturalColors: naturalColors)
 
             let curveText = zip(Self.colorCandidates, curve)
@@ -240,17 +231,11 @@ struct SuggestCommand: ParsableCommand {
         imageWidth: Int,
         imageHeight: Int
     ) -> Cell {
-        let pixelsPerMM = Double(max(imageWidth, imageHeight)) / ImportPipeline.referenceLongEdgeMM
-        // Equivalent-circle diameter in mm per region, from net polygon area.
-        let diameters = template.regions.map { region -> Double in
-            let net = max(
-                abs(PolygonGeometry.signedArea(of: region.path))
-                    - region.holes.reduce(0) { $0 + abs(PolygonGeometry.signedArea(of: $1)) },
-                0
-            )
-            return 2 * (net / Double.pi).squareRoot() / pixelsPerMM
-        }
-        let dustLimit = tiers[tierIndex].mm + dustBandMM
+        // Same per-region mm sizing ImportInference.inferredParameters uses.
+        let diameters = ImportInference.regionDiametersMM(
+            of: template, imageWidth: imageWidth, imageHeight: imageHeight
+        )
+        let dustLimit = tiers[tierIndex].mm + ImportInference.dustBandMM
         let dustCount = diameters.filter { $0 < dustLimit }.count
         let sorted = diameters.sorted()
         return Cell(
@@ -262,17 +247,6 @@ struct SuggestCommand: ParsableCommand {
             dustShare: diameters.isEmpty ? 0 : Double(dustCount) / Double(diameters.count),
             medianRegionMM: sorted.isEmpty ? 0 : sorted[sorted.count / 2]
         )
-    }
-
-    /// The fidelity elbow: fewest candidate colors whose mean ΔE is within
-    /// the slack of the most-colors error.
-    private static func inferNaturalColors(curve: [Double]) -> Int {
-        let best = curve.last ?? 0
-        let threshold = max(best * fidelitySlackRatio, best + fidelitySlackAbsolute)
-        for (candidate, error) in zip(colorCandidates, curve) where error <= threshold {
-            return candidate
-        }
-        return colorCandidates.last!
     }
 
     private static func deal(cells: [Cell], naturalColors: Int) -> [Card] {
@@ -314,7 +288,7 @@ struct SuggestCommand: ParsableCommand {
         // least-bad one (lowest dust, then most regions) rather than
         // nothing — the parent still needs *an* import to react to.
         if cards.isEmpty {
-            let pool = cells.filter { $0.regionCount >= 2 && $0.regionCount <= maxRegions }
+            let pool = cells.filter { $0.regionCount >= 2 && $0.regionCount <= ImportInference.maxRegions }
             let preferred = pool.filter { $0.colorCount == naturalColors }
             let fallback = (preferred.isEmpty ? pool : preferred).min {
                 ($0.dustShare, -$0.regionCount) < ($1.dustShare, -$1.regionCount)
