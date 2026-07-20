@@ -4,7 +4,7 @@ import UIKit
 
 /// One region's rings as an even-odd CGPath in TEMPLATE space — the
 /// building block of `allowedInkMask` below.
-private func templateSpaceCGPath(_ region: CBNRegion) -> CGPath {
+func templateSpaceCGPath(_ region: CBNRegion) -> CGPath {
     let path = CGMutablePath()
     for ring in [region.path] + region.holes where ring.count >= 3 {
         path.move(to: CGPoint(x: ring[0].x, y: ring[0].y))
@@ -41,8 +41,9 @@ func allowedInkMask(template: CBNTemplate, colorNumber: Int) -> CGPath {
 /// `CommittedInkRenderer` repaint a LATE fill (one that happened after a
 /// scribble already covered it) without bleeding into a differently-shaped
 /// region stacked on top (the M3 crayon-layering fix — see its doc comment
-/// on `image(...)`).
-private func visibleRegionAreaMask(regionIndex: Int, template: CBNTemplate) -> CGPath {
+/// on `image(...)`), and `InkCoverage`'s occluded-vs-merely-tiny arbiter
+/// for regions that rasterize to no pixels at measurement scale.
+func visibleRegionAreaMask(regionIndex: Int, template: CBNTemplate) -> CGPath {
     let regions = template.regions
     guard regionIndex < regions.count, regions[regionIndex].path.count >= 3 else {
         return CGMutablePath()

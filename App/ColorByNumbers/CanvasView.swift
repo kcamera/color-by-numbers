@@ -76,6 +76,13 @@ final class CanvasModel {
     /// import PencilKit (CBNAttempt.swift) — this app-side `PKDrawing` is
     /// the only place those bytes get interpreted as strokes.
     var drawing: PKDrawing
+    /// Which regions are visibly colored, measured from the rendered
+    /// pixels (InkCoverage) — the answer the attempt itself deliberately
+    /// doesn't hold. Derived state: recomputed after every mutation that
+    /// changes the paint, never persisted, so it can never disagree with
+    /// the drawing it describes. The Done badge and the crayon-hint's
+    /// scoping both read this.
+    private(set) var coveredRegionIDs: Set<String> = []
 
     init(library: CBNLibrary, item: CBNLibraryItem) {
         self.library = library
@@ -104,9 +111,23 @@ final class CanvasModel {
         } else {
             drawing = PKDrawing()
         }
+        refreshCoverage()
     }
 
     var template: CBNTemplate { item.template }
+
+    /// Re-measures `coveredRegionIDs` from the current paint — called after
+    /// every mutation (and once at load). Synchronous on purpose: the
+    /// measurement raster is coarse (InkCoverage.maxRasterDimension), so
+    /// this is far cheaper than the full-scale committed-ink render the
+    /// canvas already performs on the same beat.
+    private func refreshCoverage() {
+        coveredRegionIDs = InkCoverage.coveredRegionIDs(
+            template: template,
+            attempt: attempt,
+            drawing: drawing
+        )
+    }
 
     /// A tap in TEMPLATE coordinate space (already mapped back through the
     /// view's fit transform). Fills the topmost region under the point if
@@ -120,6 +141,7 @@ final class CanvasModel {
               !attempt.hasTapFill(region.id)
         else { return }
         attempt.recordTapFill(region.id)
+        refreshCoverage()
         save()
     }
 
@@ -148,6 +170,7 @@ final class CanvasModel {
         guard !landed.isEmpty else { return }
         drawing = PKDrawing(strokes: drawing.strokes + landed)
         attempt.recordStroke(drawing.dataRepresentation(), substrokes: landed.count, clipped: clipped)
+        refreshCoverage()
         save()
     }
 
@@ -163,6 +186,7 @@ final class CanvasModel {
         switch attempt.actionLog.last {
         case .fill:
             attempt.undoLastTapFill()
+            refreshCoverage()
             save()
         case .strokes(let count), .clippedStrokes(let count):
             var strokes = drawing.strokes
@@ -170,6 +194,7 @@ final class CanvasModel {
             let updated = PKDrawing(strokes: strokes)
             drawing = updated
             attempt.undoLastStroke(updatedDrawing: strokes.isEmpty ? nil : updated.dataRepresentation())
+            refreshCoverage()
             save()
         case nil:
             break
@@ -190,6 +215,7 @@ final class CanvasModel {
         do {
             attempt = try library.newAttempt(in: item.id)
             drawing = PKDrawing()
+            refreshCoverage()
         } catch {
             assertionFailure("Failed to color it again: \(error)")
         }
@@ -412,7 +438,12 @@ struct CanvasView: View {
         // attempt that's all strokes and no fills still has something to
         // take back.
         let canUndo = !model.attempt.actionLog.isEmpty
-        let isComplete = template.regions.allSatisfy { tapFillIDs.contains($0.id) }
+        // Both measured from the PIXELS (InkCoverage via the model's
+        // cache), so a region colored with strokes counts exactly like a
+        // tap-filled one — the fix for stroke-colored attempts never
+        // reaching Done and the crayon-hint flashing over finished work.
+        let coveredIDs = model.coveredRegionIDs
+        let isComplete = template.regions.allSatisfy { coveredIDs.contains($0.id) }
         let isPristine = model.attempt.isPristine
 
         ZStack {
@@ -548,7 +579,7 @@ struct CanvasView: View {
                         Canvas { context, _ in
                             drawFlash(
                                 template: template,
-                                tapFillIDs: tapFillIDs,
+                                coveredIDs: coveredIDs,
                                 colorNumber: heldColorNumber,
                                 fit: fit,
                                 opacity: 1,
@@ -726,14 +757,18 @@ struct CanvasView: View {
         context.draw(text, at: fit.templateToView(region.labelPoint), anchor: .center)
     }
 
-    /// One frame of the crayon-hint flash: every UNFILLED region matching
-    /// `colorNumber` gets its number redrawn oversized, at `opacity`. Never
-    /// touches the region's own fill or boundary stroke (Kevin's call —
-    /// the boundary is the one source of truth for coloring, and must stay
-    /// exactly as sharp as it always is).
+    /// One frame of the crayon-hint flash: every not-yet-covered region
+    /// matching `colorNumber` gets its number redrawn oversized, at
+    /// `opacity`. "Covered" is measured from the pixels (InkCoverage), so
+    /// a region the child solidly stroke-colored stops flashing exactly
+    /// like a tap-filled one — the point of the hint is finding work left
+    /// to do, not auditing which tool did it. Never touches the region's
+    /// own fill or boundary stroke (Kevin's call — the boundary is the one
+    /// source of truth for coloring, and must stay exactly as sharp as it
+    /// always is).
     private func drawFlash(
         template: CBNTemplate,
-        tapFillIDs: Set<String>,
+        coveredIDs: Set<String>,
         colorNumber: Int,
         fit: FitTransform,
         opacity: Double,
@@ -741,7 +776,7 @@ struct CanvasView: View {
     ) {
         for region in template.regions {
             guard region.colorNumber == colorNumber,
-                  !tapFillIDs.contains(region.id),
+                  !coveredIDs.contains(region.id),
                   region.path.count >= 3
             else { continue }
             drawFlashNumber(region: region, fit: fit, opacity: opacity, in: context)

@@ -13,6 +13,11 @@ Two surfaces in this repo:
   use `-c release` — debug is ~30× slower.
 - **The iPad app (GUI)**: XCUITest is the driving harness — `simctl` has
   no tap primitive, and idb/cliclick aren't installed.
+- **App-side logic (UIKit/PencilKit-dependent)**: `ColorByNumbersTests`, a
+  hosted unit bundle (e.g. InkCoverage's pixel measurement) — code that
+  can't live in CBNKit's SwiftPM tests because CBNKit must stay
+  UI-framework-free. Run with `-only-testing:ColorByNumbersTests`; needs no
+  photo seeding and runs in well under a second.
 
 ## App drive recipe (works, verified 2026-07-15)
 
@@ -76,6 +81,20 @@ tests, with NO crash report anywhere (the app never crashed — the other
 runner killed it). Before any suite run: `ps aux | grep xcodebuild` and
 kill strays. If tests "crash" with no .ips file in
 ~/Library/Logs/DiagnosticReports, suspect this first.
+
+## A killed suite run leaves a poisoned app library
+
+The UI tests assume the freshly-seeded starter library, but several of
+them MUTATE it as they run: `testLibraryManagementRenameRestoreRemove`
+REMOVES the Banner picture outright, and both import tests add items.
+Seeding is seed-if-EMPTY, so nothing ever comes back on its own. Kill a
+suite mid-run (or let one fail partway) and the NEXT run inherits the
+wreckage: "Banner card never appeared", duplicate "Rainbow Test" cards
+matching ambiguously. Before rerunning after any interrupted/failed suite:
+`xcrun simctl uninstall booted com.kcamera.ColorByNumbers` (photos stay;
+only the app container resets). Related trap: a backgrounded xcodebuild
+piped through plain `grep` block-buffers — an "empty" output file does NOT
+mean no tests ran; use `grep --line-buffered` or check the xcresult.
 
 ## Two-fixture photo seeding: order matters, and `addmedia` never dedupes
 
