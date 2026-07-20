@@ -347,7 +347,7 @@ private var repoRoot: URL {
     // but no number glyphs — the innermost region is small enough that its
     // number ink would land on any center sample point.
     let rendered = TemplateRenderer.render(
-        template, mode: .composite, scale: 8, filledRegionIDs: [redID]
+        template, mode: .composite, scale: 8, tapFillRegionIDs: [redID]
     )!
     // Outermost band: red. Middle ring and dead center: WHITE — they are
     // unfilled regions stacked above the filled container.
@@ -417,10 +417,10 @@ private func pixelColor(in image: CGImage, x: Int, y: Int) -> (r: UInt8, g: UInt
     }
 }
 
-// MARK: - Studio thumbnail face (filledRegionIDs)
+// MARK: - Studio thumbnail face (tapFillRegionIDs)
 
 /// A tiny two-region template, hand-built rather than imported: the Studio
-/// thumbnail tests only care about TemplateRenderer's `filledRegionIDs`
+/// thumbnail tests only care about TemplateRenderer's `tapFillRegionIDs`
 /// bookkeeping, not the import pipeline, so a synthetic document keeps them
 /// from depending on quantizer/tracer behavior incidentally.
 private func twoRegionTemplate() -> CBNTemplate {
@@ -457,12 +457,12 @@ private func twoRegionTemplate() -> CBNTemplate {
 /// DESIGN.md's Studio-honesty requirement (the M2 gate feedback): a
 /// thumbnail must show what the child has actually colored, not a pristine
 /// outline. This is the renderer half of that — `.outline` mode with
-/// `filledRegionIDs` set bakes exactly the interactive canvas's appearance
+/// `tapFillRegionIDs` set bakes exactly the interactive canvas's appearance
 /// (CanvasView.draw) into a bitmap.
 @Test func outlineModeWithFilledRegionIDsPaintsOnlyThoseRegions() {
     let template = twoRegionTemplate()
     let rendered = TemplateRenderer.render(
-        template, mode: .outline, scale: 4, filledRegionIDs: ["left"]
+        template, mode: .outline, scale: 4, tapFillRegionIDs: ["left"]
     )!
 
     // Sampled near each region's corner, away from both its stroked border
@@ -478,7 +478,7 @@ private func twoRegionTemplate() -> CBNTemplate {
     #expect(rightCorner.r > 230 && rightCorner.g > 230 && rightCorner.b > 230, "unfilled region was not white")
 }
 
-/// Regression guard: omitting `filledRegionIDs` (every existing call site —
+/// Regression guard: omitting `tapFillRegionIDs` (every existing call site —
 /// cbnc render/tune/suggest, and the Studio thumbnail's own old behavior)
 /// must still render `.outline` as pure white-and-numbers, unchanged.
 @Test func outlineModeWithNilFilledRegionIDsStaysAllWhite() {

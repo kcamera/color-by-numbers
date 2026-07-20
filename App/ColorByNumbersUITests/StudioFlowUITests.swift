@@ -157,7 +157,7 @@ final class StudioFlowUITests: XCTestCase {
     /// happened" across BOTH action kinds. Fills a region in tap mode,
     /// switches to freehand, drags a stroke, relaunches (continuous
     /// autosave must cover both), then undoes twice — stroke first, fill
-    /// second, matching `effectiveActionLog`'s interleaved order. The
+    /// second, matching `actionLog`'s interleaved order. The
     /// on-disk attempt JSON's `actionLog` at each checkpoint is inspected
     /// externally via `simctl get_app_container` (see .claude/skills/verify);
     /// the assertions here are the same kind of existence checks the other

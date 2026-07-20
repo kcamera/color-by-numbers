@@ -58,13 +58,15 @@ private func visibleRegionAreaMask(regionIndex: Int, template: CBNTemplate) -> C
 ///
 /// Why a renderer of our own instead of one `PKDrawing.image(...)` call:
 /// boundary-assist's promise is pixel-level — ink may not PAINT past the
-/// outline — but the stored strokes only guarantee their CENTER line stays
-/// inside (StrokeClipper), so half the ink width blooms over the edge when
-/// rendered raw. PKStroke.mask looked purpose-built for this and simply
-/// does not apply in `PKDrawing.image()` rendering (verified empirically:
-/// pixel-identical output with and without masks — see the M3 bloom fix).
-/// So the clip happens here, in plain CGContext, where the semantics are
-/// certain.
+/// outline — and this renderer's paint mask is that promise's SOLE
+/// enforcement: the stored strokes are the child's gestures verbatim
+/// (GestureLanding lands them unmodified, so the dried ink is exactly what
+/// the live BoundaryMask showed — the wet/dry fidelity fix; rendered raw
+/// they'd paint past every outline they crossed). PKStroke.mask looked
+/// purpose-built for this and simply does not apply in `PKDrawing.image()`
+/// rendering (verified empirically: pixel-identical output with and without
+/// masks — see the M3 bloom fix). So the clip happens here, in plain
+/// CGContext, where the semantics are certain.
 ///
 /// Which strokes get clipped, and to which crayon's regions? The action
 /// log: stroke gestures appear in it in the same order their sub-strokes
@@ -100,15 +102,15 @@ enum CommittedInkRenderer {
     /// `template.size × scale` points at `screenScale` — nil when there is
     /// nothing to draw. Drawings and masks are all in template space, so
     /// callers only choose an output scale; registration is inherent.
-    /// `filledRegionIDs` is the attempt's ORDERED fill list — its count
-    /// always equals the log's `.fill` entry count, in the same order
-    /// (invariant documented on `CBNAttempt.effectiveActionLog`) — which is
-    /// what lets this walk recover each `.fill` entry's region without
-    /// storing anything extra in the log itself.
+    /// `tapFillRegionIDs` is the attempt's ORDERED tap-fill paint record —
+    /// its count always equals the log's `.fill` entry count, in the same
+    /// order (invariant documented on `CBNAttempt.tapFillRegionIDs`) —
+    /// which is what lets this walk recover each `.fill` entry's region
+    /// without storing anything extra in the log itself.
     static func image(
         drawing: PKDrawing,
         actionLog: [CBNAttemptAction],
-        filledRegionIDs: [String],
+        tapFillRegionIDs: [String],
         template: CBNTemplate,
         scale: CGFloat,
         screenScale: CGFloat = 1
@@ -147,8 +149,8 @@ enum CommittedInkRenderer {
                 if case .fill = entry {
                     let index = fillIndex
                     fillIndex += 1
-                    guard strokesSeen > 0, index < filledRegionIDs.count,
-                          let regionIndex = regionIndexByID[filledRegionIDs[index]]
+                    guard strokesSeen > 0, index < tapFillRegionIDs.count,
+                          let regionIndex = regionIndexByID[tapFillRegionIDs[index]]
                     else { continue }
                     let region = template.regions[regionIndex]
                     guard region.path.count >= 3,
@@ -273,7 +275,7 @@ enum ThumbnailRenderer {
     static func image(template: CBNTemplate, attempt: CBNAttempt?, targetWidth: CGFloat) -> UIImage? {
         let scale = targetWidth / max(template.size.width, 1)
         guard let cgImage = TemplateRenderer.render(
-            template, mode: .outline, scale: scale, filledRegionIDs: Set(attempt?.filledRegionIDs ?? [])
+            template, mode: .outline, scale: scale, tapFillRegionIDs: Set(attempt?.tapFillRegionIDs ?? [])
         ) else { return nil }
 
         guard let data = attempt?.drawingData,
@@ -284,8 +286,8 @@ enum ThumbnailRenderer {
               // for the attempts ring below).
               let strokesImage = CommittedInkRenderer.image(
                   drawing: drawing,
-                  actionLog: attempt?.effectiveActionLog ?? [],
-                  filledRegionIDs: attempt?.filledRegionIDs ?? [],
+                  actionLog: attempt?.actionLog ?? [],
+                  tapFillRegionIDs: attempt?.tapFillRegionIDs ?? [],
                   template: template,
                   scale: scale
               )

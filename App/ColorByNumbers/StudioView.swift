@@ -33,9 +33,9 @@ struct StudioView: View {
 
     /// Identifies "this item's thumbnail as of this attempt state." Two
     /// fields, not one, because the template alone never changes (immutable
-    /// per CBNTemplate's doc comment) but the attempt does on every fill —
-    /// `updatedAt` is the cheap, already-persisted proxy for "the fills
-    /// changed" without diffing `filledRegionIDs` arrays.
+    /// per CBNTemplate's doc comment) but the attempt does on every mark —
+    /// `updatedAt` is the cheap, already-persisted proxy for "the paint
+    /// changed" without diffing `tapFillRegionIDs` arrays or drawing blobs.
     private struct ThumbnailKey: Hashable {
         let itemID: String
         let attemptUpdatedAt: Date

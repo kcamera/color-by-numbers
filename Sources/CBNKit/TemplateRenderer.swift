@@ -20,25 +20,27 @@ public enum TemplateRenderer {
     /// warm dark gray lines on white, never harsh pure black.
     static let outlineGray: (r: CGFloat, g: CGFloat, b: CGFloat) = (0.35, 0.33, 0.31)
 
-    /// - Parameter filledRegionIDs: When nil (the default), every call site
+    /// - Parameter tapFillRegionIDs: When nil (the default), every call site
     ///   renders exactly as before — the finished-art face, the printable
-    ///   outline page, and the tuning composite. When non-nil, it restricts
-    ///   which regions get their palette-color fill, baking one MORE face of
-    ///   the same document: an in-progress attempt. This is deliberately not
-    ///   a separate renderer — the Studio thumbnail (DESIGN.md: it must show
-    ///   honest autosaved progress, not a pristine outline) is just the
-    ///   interactive canvas's own appearance (CanvasView.draw), rasterized.
-    ///   In `.outline` mode, a filled region gets its color painted before
-    ///   the stroke pass (so the ring outline still shows on top) and its
-    ///   number suppressed; an unfilled region is untouched — white, stroked,
-    ///   numbered, exactly as it already renders with the set omitted. In
-    ///   `.filled`/`.composite`, only regions in the set get colored and the
-    ///   rest stay white; everything else about those modes is unchanged.
+    ///   outline page, and the tuning composite. When non-nil, it's an
+    ///   attempt's tap-fill PAINT record (`CBNAttempt.tapFillRegionIDs`):
+    ///   which regions get their flat palette-color fill, baking one MORE
+    ///   face of the same document: an in-progress attempt. This is
+    ///   deliberately not a separate renderer — the Studio thumbnail
+    ///   (DESIGN.md: it must show honest autosaved progress, not a pristine
+    ///   outline) is just the interactive canvas's own appearance
+    ///   (CanvasView.draw), rasterized. In `.outline` mode, a tap-filled
+    ///   region gets its color painted before the stroke pass (so the ring
+    ///   outline still shows on top) and its number suppressed; any other
+    ///   region is untouched — white, stroked, numbered, exactly as it
+    ///   already renders with the set omitted. In `.filled`/`.composite`,
+    ///   only regions in the set get colored and the rest stay white;
+    ///   everything else about those modes is unchanged.
     public static func render(
         _ template: CBNTemplate,
         mode: Mode,
         scale: Double = 1.0,
-        filledRegionIDs: Set<String>? = nil
+        tapFillRegionIDs: Set<String>? = nil
     ) -> CGImage? {
         let width = Int((template.size.width * scale).rounded())
         let height = Int((template.size.height * scale).rounded())
@@ -79,19 +81,19 @@ public enum TemplateRenderer {
                 path.closeSubpath()
             }
 
-            // Nil filledRegionIDs reproduces the per-mode legacy behavior
+            // Nil tapFillRegionIDs reproduces the per-mode legacy behavior
             // exactly (outline never fills; filled/composite fill every
             // region). A non-nil set means "the in-progress face": EVERY
-            // region paints — its palette color if the child filled it,
+            // region paints — its palette color if the child tap-filled it,
             // opaque WHITE if not. The white is load-bearing, not cosmetic:
             // painter's order stacks regions (a sail draws over the sky it
-            // sits in), so skipping the fill on an unfilled region would
-            // let a filled container bleed through it. The interactive
-            // canvas paints unfilled regions white for the same reason;
+            // sits in), so skipping the fill on an unpainted region would
+            // let a tap-filled container bleed through it. The interactive
+            // canvas paints unpainted regions white for the same reason;
             // the two renderings must agree pixel-for-pixel.
             var fillColor: CGColor? = nil
-            if let filledRegionIDs {
-                if filledRegionIDs.contains(region.id) {
+            if let tapFillRegionIDs {
+                if tapFillRegionIDs.contains(region.id) {
                     let rgb = colorsByNumber[region.colorNumber].flatMap { $0 }
                     fillColor = CGColor(
                         srgbRed: CGFloat(rgb?.red ?? 0.5),
@@ -130,11 +132,11 @@ public enum TemplateRenderer {
 
         if mode == .outline {
             for region in template.regions where region.path.count >= 3 {
-                // A filled region's number is already meaningless — the
+                // A tap-filled region's number is already meaningless — the
                 // child colored it, there's nothing left to look up — so
                 // the in-progress face omits it, matching the interactive
-                // canvas (CanvasView.draw only labels unfilled regions).
-                if let filledRegionIDs, filledRegionIDs.contains(region.id) { continue }
+                // canvas (CanvasView.draw labels only unpainted regions).
+                if let tapFillRegionIDs, tapFillRegionIDs.contains(region.id) { continue }
                 // Net area — outer ring minus holes — so a thin outline
                 // mesh sizes its number by its actual ink, not by the
                 // whole drawing its outer ring happens to enclose.

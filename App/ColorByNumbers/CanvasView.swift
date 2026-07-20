@@ -117,9 +117,9 @@ final class CanvasModel {
     func tap(at point: CBNPoint) {
         guard let region = template.region(at: point),
               region.colorNumber == selectedColorNumber,
-              !attempt.isFilled(region.id)
+              !attempt.hasTapFill(region.id)
         else { return }
-        attempt.fill(region.id)
+        attempt.recordTapFill(region.id)
         save()
     }
 
@@ -160,9 +160,9 @@ final class CanvasModel {
     /// ever happened in this attempt, so the button can stay tappable
     /// rather than disabled.
     func undo() {
-        switch attempt.effectiveActionLog.last {
+        switch attempt.actionLog.last {
         case .fill:
-            attempt.undoLastFill()
+            attempt.undoLastTapFill()
             save()
         case .strokes(let count), .clippedStrokes(let count):
             var strokes = drawing.strokes
@@ -398,21 +398,21 @@ struct CanvasView: View {
         // dependency tracking attaches to `body`'s own execution rather
         // than to Canvas's separate rendering closure.
         let template = model.template
-        let filledIDs = Set(model.attempt.filledRegionIDs)
-        // Ordered, unlike `filledIDs` above: the committed-ink renderer
-        // needs fill CHRONOLOGY (which fill happened at which point in the
-        // log), not just fill membership, to repaint a late fill over an
+        let tapFillIDs = Set(model.attempt.tapFillRegionIDs)
+        // Ordered, unlike `tapFillIDs` above: the committed-ink renderer
+        // needs paint CHRONOLOGY (which tap fill happened at which point in
+        // the log), not just membership, to repaint a late fill over an
         // earlier scribble (M3 crayon-layering fix).
-        let filledRegionIDs = model.attempt.filledRegionIDs
+        let tapFillRegionIDs = model.attempt.tapFillRegionIDs
         let drawing = model.drawing
-        let actionLog = model.attempt.effectiveActionLog
+        let actionLog = model.attempt.actionLog
         let mode = model.mode
         let selectedColorNumber = model.selectedColorNumber
         // M3: the log, not the fill count, is what Undo dims on — an
         // attempt that's all strokes and no fills still has something to
         // take back.
-        let canUndo = !model.attempt.effectiveActionLog.isEmpty
-        let isComplete = model.attempt.isComplete(for: template)
+        let canUndo = !model.attempt.actionLog.isEmpty
+        let isComplete = template.regions.allSatisfy { tapFillIDs.contains($0.id) }
         let isPristine = model.attempt.isPristine
 
         ZStack {
@@ -437,7 +437,7 @@ struct CanvasView: View {
                         )
 
                     Canvas { context, _ in
-                        draw(template: template, filledIDs: filledIDs, fit: fit, in: context)
+                        draw(template: template, tapFillIDs: tapFillIDs, fit: fit, in: context)
                     }
 
                     // COMMITTED ink: every completed gesture, rendered from
@@ -456,7 +456,7 @@ struct CanvasView: View {
                     if let ink = CommittedInkRenderer.image(
                         drawing: drawing,
                         actionLog: actionLog,
-                        filledRegionIDs: filledRegionIDs,
+                        tapFillRegionIDs: tapFillRegionIDs,
                         template: template,
                         scale: fit.scale,
                         screenScale: displayScale
@@ -548,7 +548,7 @@ struct CanvasView: View {
                         Canvas { context, _ in
                             drawFlash(
                                 template: template,
-                                filledIDs: filledIDs,
+                                tapFillIDs: tapFillIDs,
                                 colorNumber: heldColorNumber,
                                 fit: fit,
                                 opacity: 1,
@@ -661,13 +661,13 @@ struct CanvasView: View {
         return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 
-    /// Draws every region in stored painter's order: filled regions get
-    /// their palette color, unfilled regions stay white with their number
-    /// printed at the label point — mirroring TemplateRenderer's `.outline`
-    /// + per-region fill, just interactive instead of baked into a bitmap.
+    /// Draws every region in stored painter's order: tap-filled regions get
+    /// their palette color, the rest stay white with their number printed
+    /// at the label point — mirroring TemplateRenderer's `.outline` +
+    /// per-region fill, just interactive instead of baked into a bitmap.
     private func draw(
         template: CBNTemplate,
-        filledIDs: Set<String>,
+        tapFillIDs: Set<String>,
         fit: FitTransform,
         in context: GraphicsContext
     ) {
@@ -682,16 +682,16 @@ struct CanvasView: View {
         for region in template.regions {
             guard region.path.count >= 3 else { continue }
             let path = regionPath(region, fit: fit)
-            let isFilled = filledIDs.contains(region.id)
+            let isTapFilled = tapFillIDs.contains(region.id)
             var fillColor = Color.white
-            if isFilled, let rgb = paletteByNumber[region.colorNumber] ?? nil {
+            if isTapFilled, let rgb = paletteByNumber[region.colorNumber] ?? nil {
                 fillColor = Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
             }
 
             context.fill(path, with: .color(fillColor), style: FillStyle(eoFill: true))
             context.stroke(path, with: .color(outlineColor), lineWidth: 1.2)
 
-            if !isFilled {
+            if !isTapFilled {
                 drawNumber(region: region, fit: fit, color: outlineColor, in: context)
             }
         }
@@ -733,7 +733,7 @@ struct CanvasView: View {
     /// exactly as sharp as it always is).
     private func drawFlash(
         template: CBNTemplate,
-        filledIDs: Set<String>,
+        tapFillIDs: Set<String>,
         colorNumber: Int,
         fit: FitTransform,
         opacity: Double,
@@ -741,7 +741,7 @@ struct CanvasView: View {
     ) {
         for region in template.regions {
             guard region.colorNumber == colorNumber,
-                  !filledIDs.contains(region.id),
+                  !tapFillIDs.contains(region.id),
                   region.path.count >= 3
             else { continue }
             drawFlashNumber(region: region, fit: fit, opacity: opacity, in: context)
